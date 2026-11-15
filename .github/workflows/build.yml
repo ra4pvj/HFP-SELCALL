@@ -10,6 +10,8 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+env:
+  PYTHONIOENCODING: utf-8
 permissions:
   contents: write          # needed to create a GitHub Release
 jobs:
