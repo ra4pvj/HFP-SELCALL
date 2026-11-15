@@ -166,22 +166,16 @@ def test_real_recording(tmp):
     core.sel.stop()
     x, fs_w = S.read_wav(os.path.join(ROOT, 'testdata', 'SELCALL_from_1111_to_1234.wav'))
     fs = core.fs
-    x = np.interp(np.arange(int(len(x) * fs / fs_w)) * fs_w / fs, np.arange(len(x)), x).astype(np.float32)
+    # float arange: on Windows numpy 1.x the default int is 32-bit and n * 44100 would overflow
+    x = np.interp(np.arange(int(len(x) * fs / fs_w), dtype=np.float64) * fs_w / fs,
+                  np.arange(len(x), dtype=np.float64), x).astype(np.float32)
     x = np.concatenate([x, np.zeros(3 * fs, dtype=np.float32)])
     push(core, x, fs)
     core.sel.process_now(flush=True)
     items = drain(q, 2.0)
     core.stop_rx()
     srx = [i for i in items if i[0] == 'sel_rx']
-    if not any(i[1]['from'] == '1111' and i[1]['to'] == '1234' and i[3] for i in srx):
-        import numpy
-        print('DIAG numpy', numpy.__version__, 'wav', fs_w, len(x), float(abs(x).max()))
-        print('DIAG items', [i[0] for i in items][:40], srx)
-        print('DIAG direct', [S.fmt_call(c) for c in SE.decode_file(os.path.join(ROOT, 'testdata',
-                                                                                'SELCALL_from_1111_to_1234.wav'))])
-        d8 = SE.Downsampler(fs).push(x)
-        print('DIAG 48k->8k', len(d8), [S.fmt_call(c) for c in S.decode(d8, SE.RX_FS)])
-        raise AssertionError(srx)
+    assert any(i[1]['from'] == '1111' and i[1]['to'] == '1234' and i[3] for i in srx), srx
     print('OK  real CODAN recording: 1111→1234 decoded through the shared input (resampled to 48 kHz)')
 
 
