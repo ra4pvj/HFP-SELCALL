@@ -1,0 +1,107 @@
+name: Build Windows exe + macOS app
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия релиза, например v1.0.0 (пусто = только сборка без релиза)'
+        required: false
+        default: ''
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: write          # needed to create a GitHub Release
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - run: pip install "numpy==1.24.4"
+      - run: python tests/test_combined.py
+
+  build:
+    # Python 3.8 is the last version that runs on Windows 7; numpy 1.x (not 2.x) runs on CPUs without SSE4.2/POPCNT
+    needs: test
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        arch: [x64, x86]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+          architecture: ${{ matrix.arch }}
+      - run: pip install "numpy==1.24.4" "sounddevice==0.4.6" "pyserial>=3.5" "pyinstaller==5.13.2"
+      # one-folder build: nothing is extracted to %TEMP% at start-up (avoids "Failed to extract ... dll")
+      - run: pyinstaller --noconfirm --onedir --windowed --name HFPSelcallApp --collect-all sounddevice --hidden-import hfpager_modem --hidden-import hfpager_rx --hidden-import hfpager_ptt --hidden-import hfpager_rig --hidden-import selcall --hidden-import selcall_engine --hidden-import serial.tools.list_ports hfp_selcall_app.py
+      - run: Compress-Archive -Path dist\HFPSelcallApp -DestinationPath HFPSelcallApp-windows-${{ matrix.arch }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HFPSelcallApp-windows-${{ matrix.arch }}
+          path: HFPSelcallApp-windows-${{ matrix.arch }}.zip
+
+  build-macos:
+    # PyInstaller .app bundle (ad-hoc signed, not notarized); Apple Silicon and Intel are separate builds
+    needs: test
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.arch == 'x64' }}      # the Intel runner must not block the release
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - run: python -m PyInstaller --noconfirm hfp_selcall_mac.spec
+      - run: codesign --force --deep --sign - dist/HFPSelcallApp.app
+      - run: ditto -c -k --sequesterRsrc --keepParent dist/HFPSelcallApp.app HFPSelcallApp-macos-${{ matrix.arch }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HFPSelcallApp-macos-${{ matrix.arch }}
+          path: HFPSelcallApp-macos-${{ matrix.arch }}.zip
+
+  release:
+    # runs for a pushed tag v* or for a manual run with a version filled in
+    needs: [build, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: HFPSelcallApp-*
+          merge-multiple: true
+          path: dist
+      - name: Source archive
+        run: zip -qr dist/HFPSelcallApp-source.zip . -x ".git/*" -x "dist/*"
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          cat > notes.md <<'NOTES'
+          **HFPSelcallApp** — HFPager-совместимый пейджер (PS-18) и HF Selcall CCIR 493-4 (CODAN) в одной программе: общий приём со звуковой карты, общая передача и PTT/CAT.
+
+          - `HFPSelcallApp-windows-x64.zip` — Windows 7/8/10/11, 64 бита
+          - `HFPSelcallApp-windows-x86.zip` — Windows 7/8/10/11, 32 бита
+          - `HFPSelcallApp-macos-arm64.zip` — macOS на Apple Silicon; `HFPSelcallApp-macos-x64.zip` — Mac с Intel
+          - `HFPSelcallApp-source.zip` — исходный код (Python 3.8+, `pip install -r requirements.txt`)
+
+          Распакуйте архив целиком и запустите `HFPSelcallApp.exe`. На Windows 7 нужны SP1 и KB2999226 (Universal C Runtime). Mac: первый запуск — правый клик → «Открыть»; разрешите доступ к микрофону.
+          NOTES
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --clobber
+          else
+            gh release create "$TAG" dist/*.zip --title "HFPSelcallApp $TAG" --notes-file notes.md --generate-notes --target "$GITHUB_SHA"
+          fi
