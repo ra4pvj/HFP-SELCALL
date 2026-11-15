@@ -173,7 +173,15 @@ def test_real_recording(tmp):
     items = drain(q, 2.0)
     core.stop_rx()
     srx = [i for i in items if i[0] == 'sel_rx']
-    assert any(i[1]['from'] == '1111' and i[1]['to'] == '1234' and i[3] for i in srx), srx
+    if not any(i[1]['from'] == '1111' and i[1]['to'] == '1234' and i[3] for i in srx):
+        import numpy
+        print('DIAG numpy', numpy.__version__, 'wav', fs_w, len(x), float(abs(x).max()))
+        print('DIAG items', [i[0] for i in items][:40], srx)
+        print('DIAG direct', [S.fmt_call(c) for c in SE.decode_file(os.path.join(ROOT, 'testdata',
+                                                                                'SELCALL_from_1111_to_1234.wav'))])
+        d8 = SE.Downsampler(fs).push(x)
+        print('DIAG 48k->8k', len(d8), [S.fmt_call(c) for c in S.decode(d8, SE.RX_FS)])
+        raise AssertionError(srx)
     print('OK  real CODAN recording: 1111→1234 decoded through the shared input (resampled to 48 kHz)')
 
 
