@@ -19,8 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.8'
-      - run: pip install "numpy==1.24.4"
+          python-version: '3.12'
+      - run: pip install numpy
       - run: python tests/test_combined.py
 
   build:
@@ -37,6 +37,7 @@ jobs:
           python-version: '3.8'
           architecture: ${{ matrix.arch }}
       - run: pip install "numpy==1.24.4" "sounddevice==0.4.6" "pyserial>=3.5" "pyinstaller==5.13.2"
+      - run: python tests/test_combined.py        # same test on Python 3.8 / numpy 1.24 (the Windows 7 stack)
       # one-folder build: nothing is extracted to %TEMP% at start-up (avoids "Failed to extract ... dll")
       - run: pyinstaller --noconfirm --onedir --windowed --name HFPSelcallApp --collect-all sounddevice --hidden-import hfpager_modem --hidden-import hfpager_rx --hidden-import hfpager_ptt --hidden-import hfpager_rig --hidden-import selcall --hidden-import selcall_engine --hidden-import serial.tools.list_ports hfp_selcall_app.py
       - run: Compress-Archive -Path dist\HFPSelcallApp -DestinationPath HFPSelcallApp-windows-${{ matrix.arch }}.zip
