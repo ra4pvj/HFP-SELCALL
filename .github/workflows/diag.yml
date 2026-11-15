@@ -1,0 +1,22 @@
+name: diag
+on:
+  push:
+    branches: [diag]
+env:
+  PYTHONIOENCODING: utf-8
+jobs:
+  diag:
+    strategy:
+      matrix:
+        include:
+          - {os: windows-2022, py: '3.8', np: 'numpy==1.24.4'}
+          - {os: ubuntu-22.04, py: '3.8', np: 'numpy==1.24.4'}
+          - {os: windows-2022, py: '3.12', np: 'numpy'}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.py }}
+      - run: pip install "${{ matrix.np }}"
+      - run: python tests/diag.py
