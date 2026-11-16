@@ -29,8 +29,19 @@ TRANSLIT = dict(zip("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫ�
                      "a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "j", "k", "l", "m", "n", "o", "p",
                      "r", "s", "t", "u", "f", "h", "c", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya", "N"]))
 
-RING_STYLES = [("codan", "Двухтональный (как CODAN)"), ("vertex", "Трель (как Vertex)"),
-               ("beep", "Короткие гудки")]
+RING_STYLES = [("codan", "Двухтональный"), ("vertex", "Трель"),
+               ("beep", "Короткие гудки"), ("kalinka", "Мелодия «Калинка»")]
+ANSWER_SECONDS = 2.5        # ответ в эфир тонами: 2,5 с (мелодия звучит целиком один раз)
+
+# Начало припева «Калинки» (И. Ларионов, 1860; общественное достояние) по нотам, на октаву выше записи:
+# E5 | D5 B4 C5 | D5 B4 C5 | D5 C5 B4 | A4 (частота, Гц; длительность в четвертях). 16 четвертей ≈ 2,9 с.
+_E5, _D5, _C5, _B4, _A4 = 659.26, 587.33, 523.25, 493.88, 440.0
+KALINKA_QUARTER = 0.18
+KALINKA = [(_E5, 2),
+           (_D5, 2), (_B4, 1), (_C5, 1),
+           (_D5, 2), (_B4, 1), (_C5, 1),
+           (_D5, 2), (_C5, 1), (_B4, 1),
+           (_A4, 2)]
 
 
 def translit(s):
@@ -215,7 +226,17 @@ def ring_pattern(style, fs, volume):
     def silence(sec):
         out.append(np.zeros(int(sec * fs)))
 
-    if style == "vertex":
+    if style == "kalinka":
+        for f, n in KALINKA:
+            dur = n * KALINKA_QUARTER
+            m = int((dur - 0.015) * fs)
+            t = np.arange(m) / fs
+            env = (np.minimum(1, t / 0.006) * np.exp(-1.2 * t / dur) *
+                   np.minimum(1, (m - 1 - np.arange(m)) / (0.006 * fs)))
+            out.append(volume * env * (0.85 * np.sin(2 * np.pi * f * t) + 0.15 * np.sin(4 * np.pi * f * t)))
+            silence(0.015)
+        silence(0.8)
+    elif style == "vertex":
         for _ in range(2):
             for _ in range(10):
                 tone(1500, 0.025)
@@ -235,6 +256,19 @@ def ring_pattern(style, fs, volume):
     return np.concatenate(out).astype(np.float32)
 
 
+def answer_pattern(style, fs, volume):
+    """Сигнал ответа в эфир: мелодия — один раз без паузы; тоны — 2,5 с, конец плавно гасится."""
+    x = ring_pattern(style, fs, volume)
+    if style == "kalinka":
+        return x[:max(0, len(x) - int(0.8 * fs))]
+    n = int(ANSWER_SECONDS * fs)
+    y = np.tile(x, n // len(x) + 1)[:n].copy()
+    f = min(n, int(0.02 * fs))
+    if f:
+        y[-f:] *= np.linspace(1, 0, f)
+    return y.astype(np.float32)
+
+
 class Ringer:
     """Plays the ring pattern in a loop on its own OutputStream (does not touch sd.play(), which the
     transmitter uses).  Stops by itself after `seconds`."""
@@ -245,8 +279,8 @@ class Ringer:
         self.timer = None
         self.lock = threading.Lock()
 
-    def start(self, device, style, volume, seconds):
-        """returns error text or None"""
+    def start(self, device, style, volume, seconds, answer=False):
+        """returns error text or None.  answer=True: play the answer signal once (preview, not on air)"""
         self.stop()
         if self.sd is None:
             return 'звуковая библиотека недоступна'
@@ -254,11 +288,21 @@ class Ringer:
             fs = int(self.sd.query_devices(device, 'output')['default_samplerate'])
         except Exception:
             fs = 48000
-        pat = ring_pattern(style, fs, float(volume))
+        if answer:
+            pat = np.concatenate((answer_pattern(style, fs, float(volume)), np.zeros(int(0.2 * fs), np.float32)))
+            seconds = len(pat) / fs
+        else:
+            pat = ring_pattern(style, fs, float(volume))
         pos = [0]
 
         def cb(outdata, frames, t, status):
             n = len(outdata)
+            if answer:
+                chunk = pat[pos[0]:pos[0] + n]
+                outdata[:, 0] = 0
+                outdata[:len(chunk), 0] = chunk
+                pos[0] += n
+                return
             idx = (np.arange(n) + pos[0]) % len(pat)
             outdata[:, 0] = pat[idx]
             pos[0] = (pos[0] + n) % len(pat)
@@ -291,3 +335,147 @@ class Ringer:
     @property
     def active(self):
         return self.stream is not None
+
+
+# ============================================================================ listening to the air
+class Listener:
+    """Input audio to a loudspeaker for a while (to hear a voice message after a Selcall, or the
+    station's reply after our own call).  feed() is called from the input callback."""
+
+    def __init__(self, sd_module):
+        self.sd = sd_module
+        self.stream = None
+        self.buf = queue.Queue(maxsize=50)
+        self.fs_in = 48000
+        self.fs_out = 48000
+        self.level = 1.0
+        self.lock = threading.Lock()
+        self._rest = np.zeros(0, np.float32)
+
+    @property
+    def active(self):
+        return self.stream is not None
+
+    def start(self, device, fs_in, level=1.0):
+        """returns error text or None"""
+        self.stop()
+        if self.sd is None:
+            return 'звуковая библиотека недоступна'
+        self.fs_in, self.level = int(fs_in), float(level)
+        self._rest = np.zeros(0, np.float32)
+        last = None
+        for fs in (self.fs_in, 48000, 44100):
+            try:
+                st = self.sd.OutputStream(samplerate=fs, device=device, channels=1, dtype='float32',
+                                          callback=self._cb)
+                self.fs_out = fs
+                st.start()
+                with self.lock:
+                    self.stream = st
+                return None
+            except Exception as ex:
+                last = ex
+        return str(last)
+
+    def feed(self, x):
+        if self.stream is None:
+            return
+        y = np.asarray(x, np.float32) * self.level
+        if self.fs_out != self.fs_in:
+            n = int(len(y) * self.fs_out / self.fs_in)
+            y = np.interp(np.arange(n, dtype=np.float64) * self.fs_in / self.fs_out,
+                          np.arange(len(y), dtype=np.float64), y).astype(np.float32)
+        try:
+            self.buf.put_nowait(y)
+        except queue.Full:
+            pass
+
+    def _cb(self, outdata, frames, t, status):
+        out = self._rest
+        while len(out) < frames:
+            try:
+                out = np.concatenate((out, self.buf.get_nowait()))
+            except queue.Empty:
+                break
+        n = min(frames, len(out))
+        outdata[:, 0] = 0
+        outdata[:n, 0] = out[:n]
+        self._rest = out[n:][-int(self.fs_out):]          # never more than 1 s behind
+
+    def stop(self):
+        with self.lock:
+            st, self.stream = self.stream, None
+        if st is not None:
+            try:
+                st.abort()
+                st.close()
+            except Exception:
+                pass
+        while True:
+            try:
+                self.buf.get_nowait()
+            except queue.Empty:
+                break
+
+
+# ============================================================================ external device
+EXT_LINES = ["RTS", "DTR", "RTS+DTR"]
+
+
+class ExtControl:
+    """External device (siren, lamp, relay): "1" on RTS/DTR of a separate COM port."""
+
+    def __init__(self, serial_module):
+        self.serial = serial_module
+        self.ser = None
+        self.port = ""
+        self.on = False
+        self.lock = threading.Lock()
+
+    def _open(self, port, line, invert):
+        if self.ser is not None and self.port == port:
+            return
+        self._close_locked(line, invert)
+        if self.serial is None:
+            raise RuntimeError("pyserial недоступен")
+        if not port:
+            raise RuntimeError("не выбран COM-порт внешнего устройства")
+        s = self.serial.Serial()
+        s.port = port
+        s.baudrate = 9600
+        s.rts = bool(invert) if line in ("RTS", "RTS+DTR") else False   # level before open()
+        s.dtr = bool(invert) if line in ("DTR", "RTS+DTR") else False
+        s.open()
+        self.ser, self.port = s, port
+
+    def set(self, on, port, line, invert):
+        """returns error text or None"""
+        with self.lock:
+            try:
+                self._open(port, line, invert)
+                level = bool(on) != bool(invert)
+                if line in ("RTS", "RTS+DTR"):
+                    self.ser.rts = level
+                if line in ("DTR", "RTS+DTR"):
+                    self.ser.dtr = level
+                self.on = bool(on)
+                return None
+            except Exception as ex:
+                self.on = False
+                return "Внешнее устройство: %s" % ex
+
+    def _close_locked(self, line, invert):
+        if self.ser is not None:
+            try:
+                if line in ("RTS", "RTS+DTR"):
+                    self.ser.rts = bool(invert)
+                if line in ("DTR", "RTS+DTR"):
+                    self.ser.dtr = bool(invert)
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser, self.port, self.on = None, "", False
+
+    def close(self, line="RTS+DTR", invert=False):
+        with self.lock:
+            self._close_locked(line, invert)

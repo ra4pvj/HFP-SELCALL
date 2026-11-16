@@ -44,7 +44,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '2026-11-16'
+APP_VERSION = '2026-11-16b'
 APP_DIR = _app_dir()
 MONO_FONT = 'Menlo' if sys.platform == 'darwin' else ('Consolas' if sys.platform.startswith('win') else 'DejaVu Sans Mono')
 SETTINGS_FILE = os.path.join(APP_DIR, 'settings.json')
@@ -65,7 +65,13 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 # ---- HF Selcall (CCIR 493-4, CODAN)
                 sel_enable=True, sel_my_id='1234', sel_to_id='', sel_dot_seconds=6.0, sel_translit=True,
                 sel_afc=True, sel_center=SE.S.F_CENTER, sel_ring=True, sel_ring_style='codan',
-                sel_ring_volume=0.5, sel_ring_seconds=30.0, sel_ring_dev='', sel_tab=0)
+                sel_ring_volume=0.5, sel_ring_seconds=30.0, sel_ring_dev='', sel_tab=0,
+                sel_ring_air=True, sel_answer_style='kalinka',
+                sel_ext_enabled=False, sel_ext_port='', sel_ext_line='DTR', sel_ext_invert=False, sel_ext_seconds=5.0,
+                sel_listen_after_call=True, sel_listen_seconds=60.0,
+                sel_listen_after_tx=True, sel_listen_after_tx_seconds=60.0, sel_listen_level=1.0,
+                # input channel of the sound card: 0 = auto (the one with signal), 1 = left, 2 = right
+                in_channel=0)
 
 
 # ============================================================================== non-GUI core
@@ -98,6 +104,21 @@ class Core:
         self.sel = None               # SelcallEngine, shares the input stream with self.engine
         self.ringer = SE.Ringer(self.sd)
         self.last_sel_rx = 0.0        # unix time of the last decoded Selcall (see 'fail' events)
+        self.listener = SE.Listener(self.sd)       # input -> loudspeaker after a call
+        self.listen_manual = False
+        self.listen_timer = None
+        self.listen_pending = None    # seconds of listening to start when the current TX ends
+        self.ext = SE.ExtControl(P.serial)        # external device on its own COM port
+        self.ext_manual = False
+        self.ext_timer = None
+        self.tx_history = []          # (to, text, start, end) of own Selcall TX: tells our echo from a call
+        self._tx_meta = None
+        self.in_channels = 1
+        self.active_channel = 1
+        self.ch_energy = None
+        self.last_audio = time.time()
+        self.last_restart = 0.0
+        threading.Thread(target=self._rx_watchdog, daemon=True).start()
 
     # ---- settings
     def load(self):
@@ -180,6 +201,13 @@ class Core:
             self.sys('Звуковая библиотека недоступна: %s' % SD_ERROR)
             return False
         dev = self._idx(self.s['in_dev'])
+        # up to 2 channels, ONE of them is used (not the average): on a stereo interface the transceiver is
+        # usually on one input, and mixing with an empty channel halves the signal
+        try:
+            info = self.sd.query_devices(dev, 'input')
+            nch = 2 if int(info.get('max_input_channels', 1)) >= 2 else 1
+        except Exception:
+            nch = 1
         fs = None
         for cand in (48000, 44100):
             try:
@@ -202,20 +230,31 @@ class Core:
             self.sel = SE.SelcallEngine(fs, self._on_sel_call, self._on_sel_event, afc=bool(self.s['sel_afc']),
                                         fixed_center=float(self.s['sel_center']))
             self.sel.start()
-        engine, sel = self.engine, self.sel
+        engine, sel, listener = self.engine, self.sel, self.listener
 
         def cb(indata, frames, time_info, status):
-            x = indata[:, 0]
+            self.last_audio = time.time()
+            x = indata[:, self._pick_channel(indata)]
             engine.feed(x)
             if sel is not None:
                 sel.feed(x)
-        try:
-            self.stream = self.sd.InputStream(samplerate=fs, device=dev, channels=1, dtype='float32',
-                                              blocksize=int(0.05 * fs), callback=cb)
-            self.stream.start()
-        except Exception as ex:
-            self.sys('Не удалось открыть вход звуковой карты: %s' % ex)
-            self.stream = None
+            if listener.active and not self.tx_busy:
+                listener.feed(x)
+        self.stream = None
+        last = None
+        for ch in ((nch, 1) if nch > 1 else (1,)):
+            try:
+                st = self.sd.InputStream(samplerate=fs, device=dev, channels=ch, dtype='float32',
+                                         blocksize=int(0.05 * fs), callback=cb)
+                self.in_channels, self.ch_energy = ch, None
+                self.last_audio = time.time()
+                st.start()
+                self.stream = st
+                break
+            except Exception as ex:
+                last = ex
+        if self.stream is None:
+            self.sys('Не удалось открыть вход звуковой карты: %s' % last)
             return False
         self.sys('Приём запущен (%d Гц). HFPager: все скорости, АПЧ %s.  Selcall: %s.' %
                  (fs, 'включена' if self.s['afc'] else 'выключена',
@@ -239,6 +278,34 @@ class Core:
             self.sel.stop()
             self.sel = None
 
+    def _pick_channel(self, indata):
+        """index of the input channel to decode: fixed, or auto = the one with signal (with hysteresis)"""
+        nch = indata.shape[1]
+        want = int(self.s.get('in_channel') or 0)
+        if want > 0:
+            sel = min(want, nch) - 1
+        elif nch > 1:
+            e = np.mean(indata[::4].astype(np.float64) ** 2, axis=0)
+            if self.ch_energy is None or len(self.ch_energy) != nch:
+                self.ch_energy = np.zeros(nch)
+            self.ch_energy = self.ch_energy * 0.9 + e
+            best = int(np.argmax(self.ch_energy))
+            cur = self.active_channel - 1
+            sel = cur if (cur < nch and self.ch_energy[cur] * 2 >= self.ch_energy[best]) else best
+        else:
+            sel = 0
+        self.active_channel = sel + 1
+        return sel
+
+    def _rx_watchdog(self):
+        """the input gives no audio for > 4 s (USB codec 'fell asleep', IC-705) -> restart, at most every 10 s"""
+        while True:
+            time.sleep(1.0)
+            now = time.time()
+            if self.stream is not None and now - self.last_audio > 4 and now - self.last_restart > 10:
+                self.last_restart = now
+                self.q.put(('rx_restart', now - self.last_audio))
+
     def apply_live_settings(self):
         if self.engine is not None:
             self.engine.afc = bool(self.s['afc'])
@@ -255,7 +322,11 @@ class Core:
         """a Selcall / Message call was decoded (worker thread)"""
         self.last_sel_rx = time.time()
         mine = SE.same_id(c['to'], self.s['sel_my_id'])
-        own = SE.same_id(c['from'], self.s['sel_my_id'])
+        # a call FROM our own ID is a normal call (happens in practice); only our own transmission is an echo:
+        # same addressee and text, at the time of our transmission
+        own = SE.same_id(c['from'], self.s['sel_my_id']) and any(
+            SE.same_id(t[0], c['to']) and t[1] == (c['message'] or '') and t[2] - 3 <= when <= t[3] + 3
+            for t in self.tx_history)
         if c['eos'] == 'ACK-BQ':
             kind = 'ПОДТВЕРЖДЕНИЕ'
         elif c['message']:
@@ -267,11 +338,135 @@ class Core:
             '' if c['ecc_ok'] else ' [СОМНИТЕЛЬНО]', ' [своя передача]' if own else '', c['message'] or '—'))
         self.q.put(('sel_rx', c, when, mine, own))
 
-    def ring(self):
-        """start the incoming-call ring; returns error text or None"""
-        dev = self._idx(self.s.get('sel_ring_dev')) if self.s.get('sel_ring_dev') else None
-        return self.ringer.start(dev, self.s.get('sel_ring_style', 'codan'), float(self.s.get('sel_ring_volume', 0.5)),
-                                 float(self.s.get('sel_ring_seconds', 30.0)))
+    def ring_dev(self):
+        return self._idx(self.s.get('sel_ring_dev')) if self.s.get('sel_ring_dev') else None
+
+    def ring(self, answer=False):
+        """start the incoming-call ring (answer=True: play the answer signal once, as a preview);
+        returns error text or None"""
+        style = self.s.get('sel_answer_style', 'kalinka') if answer else self.s.get('sel_ring_style', 'codan')
+        return self.ringer.start(self.ring_dev(), style, float(self.s.get('sel_ring_volume', 0.5)),
+                                 float(self.s.get('sel_ring_seconds', 30.0)), answer=answer)
+
+    def send_answer(self, to_id):
+        """answer on air: the answer signal once (melody ~2.9 s or tones 2.5 s) so the calling station hears
+        that the call was received; returns error text or None"""
+        if self.tx_busy:
+            return 'Ответ в эфир не передан: идёт передача.'
+        if self.sd is None:
+            return 'Звуковая библиотека недоступна: %s' % SD_ERROR
+        sig = SE.answer_pattern(self.s.get('sel_answer_style', 'kalinka'), self.fs, float(self.s['tx_level']))
+        lead = np.zeros(int(float(self.s['ptt_delay']) * self.fs), np.float32)
+        audio = np.concatenate((lead, sig, np.zeros(int(0.3 * self.fs), np.float32))).astype(np.float32)
+        self.last_tx_error = None
+        self.tx_busy = True
+        self._tx_meta = None
+        self.q.put(('sel_answer_start', SE.digits(to_id), len(audio) / self.fs))
+        self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, self._idx(self.s['out_dev'])),
+                                           daemon=True)
+        self._tx_thread.start()
+        self.log('%s  SELCALL ОТВЕТ В ЭФИР → %s' % (self._stamp(), SE.digits(to_id)))
+        return None
+
+    # ---- listening to the air after a call (voice message / the station's reply)
+    def start_listen(self, seconds=None):
+        """input -> loudspeaker for 5 s … 10 min; a manual 'Слушать' is not interrupted"""
+        if self.listen_manual:
+            return
+        self.ringer.stop()                      # the ring has done its job: now listen to the caller
+        if self.stream is None:
+            self.q.put(('sys', 'Прослушивание: приём выключен.'))
+            return
+        err = self.listener.start(self.ring_dev(), self.fs, float(self.s.get('sel_listen_level', 1.0)))
+        if err:
+            self.q.put(('sys', 'Прослушивание: %s' % err))
+            return
+        if self.listen_timer is not None:
+            self.listen_timer.cancel()
+        sec = min(600.0, max(5.0, float(seconds or self.s.get('sel_listen_seconds') or 60)))
+        self.q.put(('sys', 'Прослушивание эфира включено на %.0f с' % sec))
+
+        def off():
+            if not self.listen_manual:
+                self.listener.stop()
+                self.q.put(('listen_state',))
+        self.listen_timer = threading.Timer(sec, off)
+        self.listen_timer.daemon = True
+        self.listen_timer.start()
+        self.q.put(('listen_state',))
+
+    def toggle_listen(self):
+        """the 'Слушать' button: on until pressed again"""
+        if self.listen_timer is not None:
+            self.listen_timer.cancel()
+            self.listen_timer = None
+        self.listen_pending = None
+        if self.listener.active:
+            self.listen_manual = False
+            self.listener.stop()
+        else:
+            self.ringer.stop()
+            err = self.listener.start(self.ring_dev(), self.fs, float(self.s.get('sel_listen_level', 1.0)))
+            if err:
+                self.q.put(('sys', 'Прослушивание: %s' % err))
+            else:
+                self.listen_manual = True
+        self.q.put(('listen_state',))
+
+    # ---- external device (siren, lamp, relay) on a separate COM port
+    def ext_conflict(self):
+        p = self.s.get('sel_ext_port') or ''
+        busy = set()
+        if self.s.get('ptt_method', 'none') != 'none':
+            busy.add(self.s.get('ptt_port') or '')
+        busy.add(self.s.get('rig_port') or '')
+        return bool(p) and p in busy
+
+    def _ext_set(self, on):
+        if on and self.ext_conflict():
+            self.q.put(('sys', 'Внешнее устройство: порт %s занят PTT/CAT — выберите другой COM-порт'
+                        % self.s['sel_ext_port']))
+            return False
+        err = self.ext.set(on, self.s.get('sel_ext_port') or '', self.s.get('sel_ext_line') or 'DTR',
+                           bool(self.s.get('sel_ext_invert')))
+        if err:
+            self.q.put(('sys', err))
+            return False
+        self.q.put(('ext_state',))
+        return True
+
+    def ext_pulse(self, seconds=None):
+        """'1' on the line for 1…60 s; a manual switch-on is not interrupted"""
+        if self.ext_manual or not self._ext_set(True):
+            return
+        if self.ext_timer is not None:
+            self.ext_timer.cancel()
+        sec = min(60.0, max(1.0, float(seconds or self.s.get('sel_ext_seconds') or 5)))
+
+        def off():
+            if not self.ext_manual:
+                self._ext_set(False)
+        self.ext_timer = threading.Timer(sec, off)
+        self.ext_timer.daemon = True
+        self.ext_timer.start()
+
+    def ext_toggle(self):
+        if self.ext_timer is not None:
+            self.ext_timer.cancel()
+            self.ext_timer = None
+        if self.ext.on:
+            self.ext_manual = False
+            self._ext_set(False)
+        elif self._ext_set(True):
+            self.ext_manual = True
+        self.q.put(('ext_state',))
+
+    def ext_reset(self):
+        if self.ext_timer is not None:
+            self.ext_timer.cancel()
+            self.ext_timer = None
+        self.ext_manual = False
+        self.ext.close(self.s.get('sel_ext_line') or 'RTS+DTR', bool(self.s.get('sel_ext_invert')))
 
     def _on_event(self, kind, info):
         self.q.put(('event', kind, info))
@@ -599,6 +794,9 @@ class Core:
         self.save()
         self.last_tx_error = None
         self.tx_busy = True
+        self._tx_meta = (to, text, len(audio) / self.fs)
+        if self.s.get('sel_listen_after_tx', True):          # then listen: to hear the station's reply
+            self.listen_pending = float(self.s.get('sel_listen_after_tx_seconds') or 60)
         self.q.put(('sel_tx_start', me, to, text, len(audio) / self.fs))
         self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, self._idx(self.s['out_dev'])),
                                            daemon=True)
@@ -637,6 +835,11 @@ class Core:
 
     def _tx_run(self, audio, out):
         self.ringer.stop()
+        meta, self._tx_meta = self._tx_meta, None
+        if meta is not None:
+            now = time.time()
+            self.tx_history = [t for t in self.tx_history if now - t[3] < 120]
+            self.tx_history.append((meta[0], meta[1], now, now + meta[2]))
         if self.engine is not None:
             self.engine.pause(True)
         sel = self.sel
@@ -669,6 +872,9 @@ class Core:
             self.last_tx_error = err
             self.tx_busy = False
             self.q.put(('tx_done', err))
+            sec, self.listen_pending = self.listen_pending, None
+            if sec and not err:
+                self.start_listen(sec)
 
     def abort_tx(self):
         try:
@@ -681,6 +887,9 @@ class Core:
 
 
 # ============================================================================== GUI
+IN_CHANNELS = ['авто (где есть сигнал)', '1 (левый)', '2 (правый)']
+
+
 def run_gui():
     import tkinter as tk
     from tkinter import ttk, messagebox
@@ -745,6 +954,18 @@ def run_gui():
         sel_ring_style=tk.StringVar(value=dict(SE.RING_STYLES).get(core.s['sel_ring_style'], SE.RING_STYLES[0][1])),
         sel_ring_dev=tk.StringVar(value=core.s['sel_ring_dev'] or 'системный выход'),
         sel_counter=tk.StringVar(),
+        sel_ring_air=tk.BooleanVar(value=core.s['sel_ring_air']),
+        sel_answer_style=tk.StringVar(value=dict(SE.RING_STYLES).get(core.s['sel_answer_style'], SE.RING_STYLES[-1][1])),
+        sel_ext_enabled=tk.BooleanVar(value=core.s['sel_ext_enabled']),
+        sel_ext_port=tk.StringVar(value=core.s['sel_ext_port']),
+        sel_ext_line=tk.StringVar(value=core.s['sel_ext_line']),
+        sel_ext_invert=tk.BooleanVar(value=core.s['sel_ext_invert']),
+        sel_ext_seconds=tk.StringVar(value='%g' % float(core.s['sel_ext_seconds'])),
+        sel_listen_after_call=tk.BooleanVar(value=core.s['sel_listen_after_call']),
+        sel_listen_seconds=tk.StringVar(value='%g' % float(core.s['sel_listen_seconds'])),
+        sel_listen_after_tx=tk.BooleanVar(value=core.s['sel_listen_after_tx']),
+        sel_listen_after_tx_seconds=tk.StringVar(value='%g' % float(core.s['sel_listen_after_tx_seconds'])),
+        in_channel=tk.StringVar(value=IN_CHANNELS[int(core.s.get('in_channel') or 0)]),
         sel_centers=tk.StringVar(value=''),
         sel_banner=tk.StringVar(value=''),
     )
@@ -756,8 +977,13 @@ def run_gui():
     ttk.Label(top, text='Мой ID:').grid(row=0, column=0, sticky='e', padx=4, pady=3)
     ttk.Entry(top, textvariable=var['my_id'], width=8).grid(row=0, column=1, sticky='w')
     ttk.Label(top, text='Вход (приём):').grid(row=0, column=2, sticky='e', padx=4)
-    cb_in = ttk.Combobox(top, textvariable=var['in_dev'], width=44, state='readonly')
-    cb_in.grid(row=0, column=3, sticky='w')
+    in_fr = ttk.Frame(top)
+    in_fr.grid(row=0, column=3, sticky='w')
+    cb_in = ttk.Combobox(in_fr, textvariable=var['in_dev'], width=44, state='readonly')
+    cb_in.pack(side='left')
+    ttk.Label(in_fr, text='канал:').pack(side='left', padx=(8, 2))
+    cb_inch = ttk.Combobox(in_fr, textvariable=var['in_channel'], values=IN_CHANNELS, width=20, state='readonly')
+    cb_inch.pack(side='left')
     ttk.Label(top, text='Выход (передача):').grid(row=1, column=2, sticky='e', padx=4)
     cb_out = ttk.Combobox(top, textvariable=var['out_dev'], width=44, state='readonly')
     cb_out.grid(row=1, column=3, sticky='w')
@@ -902,6 +1128,37 @@ def run_gui():
     cb_ring = ttk.Combobox(sr2, textvariable=var['sel_ring_dev'], width=36, state='readonly')
     cb_ring.pack(side='left')
     ttk.Button(sr2, text='Проверить звонок', command=lambda: test_ring()).pack(side='left', padx=8)
+    sr2b = ttk.Frame(bot_s)
+    sr2b.pack(fill='x', pady=(2, 0))
+    ttk.Checkbutton(sr2b, text='Ответ в эфир (вызывающий слышит, что вызов принят; один раз, уровень TX):',
+                    variable=var['sel_ring_air']).pack(side='left', padx=4)
+    ttk.Combobox(sr2b, textvariable=var['sel_answer_style'], values=[t for _, t in SE.RING_STYLES], width=22,
+                 state='readonly').pack(side='left', padx=4)
+    ttk.Button(sr2b, text='Прослушать', command=lambda: test_answer()).pack(side='left', padx=4)
+    sr3 = ttk.Frame(bot_s)
+    sr3.pack(fill='x', pady=(2, 0))
+    ttk.Checkbutton(sr3, text='Слушать эфир после вызова на мой ID, с:',
+                    variable=var['sel_listen_after_call']).pack(side='left', padx=4)
+    ttk.Entry(sr3, textvariable=var['sel_listen_seconds'], width=5).pack(side='left')
+    ttk.Checkbutton(sr3, text='после своей передачи (ответ станции), с:',
+                    variable=var['sel_listen_after_tx']).pack(side='left', padx=(12, 4))
+    ttk.Entry(sr3, textvariable=var['sel_listen_after_tx_seconds'], width=5).pack(side='left')
+    btn_listen = ttk.Button(sr3, text='Слушать', width=12, command=lambda: core.toggle_listen())
+    btn_listen.pack(side='left', padx=10)
+    sr4 = ttk.Frame(bot_s)
+    sr4.pack(fill='x', pady=(2, 0))
+    ttk.Checkbutton(sr4, text='Внешнее устройство при вызове на мой ID (отдельный COM-порт):',
+                    variable=var['sel_ext_enabled']).pack(side='left', padx=4)
+    cb_ext = ttk.Combobox(sr4, textvariable=var['sel_ext_port'], width=12)
+    cb_ext.pack(side='left')
+    ttk.Combobox(sr4, textvariable=var['sel_ext_line'], values=SE.EXT_LINES, width=8,
+                 state='readonly').pack(side='left', padx=4)
+    ttk.Checkbutton(sr4, text='инверсия', variable=var['sel_ext_invert']).pack(side='left', padx=4)
+    ttk.Label(sr4, text='время, с (1–60):').pack(side='left', padx=(6, 2))
+    ttk.Entry(sr4, textvariable=var['sel_ext_seconds'], width=4).pack(side='left')
+    ttk.Button(sr4, text='Импульс', command=lambda: test_ext()).pack(side='left', padx=(8, 2))
+    btn_ext = ttk.Button(sr4, text='Внешн.', width=12, command=lambda: ext_toggle())
+    btn_ext.pack(side='left', padx=2)
     ttk.Label(bot_s, text='Selcall передаётся через тот же выход, с тем же уровнем TX и тем же PTT/CAT. '
                           'Частоты: 1700/1870 Гц (центр 1785 Гц, USB). Текст сообщения — до %d символов.'
                           % SE.MAX_MSG, foreground='#777777', wraplength=900).pack(anchor='w', padx=4)
@@ -1074,10 +1331,33 @@ def run_gui():
             core.s['sel_tab'] = bot.index(bot.select())
         except Exception:
             pass
+        core.s['in_channel'] = IN_CHANNELS.index(var['in_channel'].get()) if var['in_channel'].get() in IN_CHANNELS else 0
+        core.s['sel_ring_air'] = bool(var['sel_ring_air'].get())
+        core.s['sel_answer_style'] = {t: k for k, t in SE.RING_STYLES}.get(var['sel_answer_style'].get(), 'kalinka')
+
+        def num(name, lo, hi, dflt):
+            try:
+                return max(lo, min(hi, float(var[name].get().replace(',', '.'))))
+            except ValueError:
+                return dflt
+        old = (core.s.get('sel_ext_port'), core.s.get('sel_ext_line'), core.s.get('sel_ext_invert'))
+        core.s['sel_ext_enabled'] = bool(var['sel_ext_enabled'].get())
+        core.s['sel_ext_port'] = var['sel_ext_port'].get().split(' - ')[0].strip()
+        core.s['sel_ext_line'] = var['sel_ext_line'].get() if var['sel_ext_line'].get() in SE.EXT_LINES else 'DTR'
+        core.s['sel_ext_invert'] = bool(var['sel_ext_invert'].get())
+        core.s['sel_ext_seconds'] = num('sel_ext_seconds', 1, 60, 5.0)
+        core.s['sel_listen_after_call'] = bool(var['sel_listen_after_call'].get())
+        core.s['sel_listen_seconds'] = num('sel_listen_seconds', 5, 600, 60.0)
+        core.s['sel_listen_after_tx'] = bool(var['sel_listen_after_tx'].get())
+        core.s['sel_listen_after_tx_seconds'] = num('sel_listen_after_tx_seconds', 5, 600, 60.0)
+        if old != (core.s['sel_ext_port'], core.s['sel_ext_line'], core.s['sel_ext_invert']):
+            core.ext.close(old[1] or 'RTS+DTR', bool(old[2]))
+            core.ext_manual = False
 
     def refresh_ports():
         ports = P.list_ports()
         cb_pp['values'] = [lbl for _, lbl in ports]
+        cb_ext['values'] = [dv for dv, _ in ports]
         cur = var['ptt_port'].get().split(' - ')[0].strip()
         if not cur and ports:
             var['ptt_port'].set(ports[0][1])
@@ -1189,6 +1469,24 @@ def run_gui():
             err = core.ring()
             if err:
                 add('[%s] • Звонок: %s' % (now(), err), 'sys')
+        if core.s.get('sel_ext_enabled') and core.s.get('sel_ext_port'):
+            core.ext_pulse()
+        if core.s.get('sel_listen_after_call', True):
+            if core.s.get('sel_ring_air'):
+                core.listen_pending = float(core.s.get('sel_listen_seconds') or 60)   # after the answer on air
+            else:
+                core.start_listen()
+        if core.s.get('sel_ring_air'):
+            frm = c['from']
+
+            def air():          # a short pause: the calling station has time to switch to receive
+                err = core.send_answer(frm)
+                if err:
+                    core.listen_pending = None
+                    add('[%s] • %s' % (now(), err), 'sys')
+                    if core.s.get('sel_listen_after_call', True):
+                        core.start_listen()
+            root.after(1000, air)
 
     def sel_dismiss():
         core.ringer.stop()
@@ -1202,6 +1500,36 @@ def run_gui():
             bot.select(bot_s)
             sel_ent.focus_set()
         sel_dismiss()
+
+    def test_answer():
+        pull_settings()
+        core.save()
+        err = core.ring(answer=True)
+        if err:
+            messagebox.showwarning('Сигнал ответа', err)
+
+    def test_ext():
+        pull_settings()
+        core.save()
+        if not core.s.get('sel_ext_port'):
+            messagebox.showwarning('Внешнее устройство', 'Укажите COM-порт внешнего устройства.')
+            return
+        core.ext_pulse()
+
+    def ext_toggle():
+        pull_settings()
+        core.save()
+        if not core.s.get('sel_ext_port'):
+            messagebox.showwarning('Внешнее устройство', 'Укажите COM-порт внешнего устройства.')
+            return
+        core.ext_toggle()
+
+    def update_sel_buttons():
+        if core.listener.active:
+            btn_listen.configure(text='Слушаю ■' if core.listen_manual else 'Слушаю…')
+        else:
+            btn_listen.configure(text='Слушать')
+        btn_ext.configure(text='Внешн. ВКЛ' if core.ext.on else 'Внешн.')
 
     def test_ring():
         pull_settings()
@@ -1654,6 +1982,7 @@ def run_gui():
     var['speed'].trace_add('write', update_counter)
     for k in ('in_dev',):
         cb_in.bind('<<ComboboxSelected>>', restart_rx)
+    cb_inch.bind('<<ComboboxSelected>>', lambda *_: (pull_settings(), core.save()))
     ttk.Button(top, text='Журнал (TXT)', command=lambda: (lambda e: e and messagebox.showwarning(
         'Журнал', e))(core.open_log())).grid(row=2, column=4, padx=6)
     ttk.Button(top, text='Обновить', command=lambda: (refresh_devices(), restart_rx())).grid(
@@ -1753,6 +2082,21 @@ def run_gui():
                                        if (info and core.s.get('sel_afc')) else '')
             elif ev == 'error':
                 add('[%s] • %s' % (now(), info['text']), 'sys')
+        elif kind == 'sel_answer_start':
+            _, to, secs = item
+            add('[%s] SELCALL ОТВЕТ В ЭФИР → %s   (≈ %.1f с)' % (now(), to, secs), 'mine')
+            var['status'].set('Ответ в эфир…')
+            btn.state(['disabled'])
+            sel_btn_call.state(['disabled'])
+            sel_btn_msg.state(['disabled'])
+            update_lamps()
+        elif kind in ('listen_state', 'ext_state'):
+            update_sel_buttons()
+        elif kind == 'rx_restart':
+            if core.stream is not None and not core.tx_busy:
+                ok_ = core.start_rx()
+                add('[%s] • Вход не отдаёт звук %.0f с — приём %s' % (now(), item[1], 'перезапущен' if ok_ else
+                                                                     'перезапустить не удалось'), 'sys')
         elif kind == 'sel_tx_start':
             _, me, to, text, secs = item
             add('[%s] SELCALL %s %s → %s%s   (передача ≈ %.0f с)' % (
@@ -1832,6 +2176,8 @@ def run_gui():
             core.save()
             core.stop_rx()
             core.ringer.stop()
+            core.listener.stop()
+            core.ext_reset()
             core.ptt.close()
             core.rig.close()
         finally:
