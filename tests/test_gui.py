@@ -96,6 +96,47 @@ def main():
     app.answer()
     assert app.var['sel_to_id'].get() == '5678' and app.banner_call is None
 
+    # stage 2: HFPager call -> banner (HFPager), answer on air after the auto-ACK pause; macros; beacon tab
+    t0 = time.time()                                       # the Selcall answer from above: started and finished
+    while time.time() - t0 < 20 and (core.tx_busy or not any('SELCALL' in t and '5678' in t and '≈' in t
+                                                               for t, _g in app.chat_lines)):
+        time.sleep(0.1)
+        app.poll()
+    time.sleep(0.6)
+    app.poll()
+    core.q.put(('hfp_call', dict(fr, text=b'CALL', counter=9)))
+    core.q.put(('hfp_msg_to_me', dict(fr, counter=10)))
+    app.poll()
+    assert app.banner_call is not None and app.banner_call[2] == 'hfp', app.banner_call
+    t0 = time.time()
+    while time.time() - t0 < 10 and not any('HFPager' in t and '→ 3' in t for t, _g in app.chat_lines):
+        time.sleep(0.1)
+        app.poll()
+    if core._tx_thread:
+        core._tx_thread.join(10)
+    app.poll()
+    assert any('HFPager' in t and '→ 3' in t for t, _tag in app.chat_lines), 'no HFPager answer on air'
+    app.answer()
+    assert app.var['to_id'].get() == '3'
+    app.macro_vars[0]['label'].set('M1')
+    app.macro_vars[0]['text'].set('MACRO TEXT')
+    app.macro_vars[0]['now'].set(False)
+    app.save_macros()
+    app.run_macro(0)
+    assert app.msg.get() == 'MACRO TEXT', app.msg.get()
+    app.var['bcn_kind'].set(app.kind_label('cw'))
+    app.var['bcn_text'].set('RA4PVJ BCN')
+    app.var['bcn_enable'].set(True)
+    app.apply()
+    assert core.s['bcn_kind'] == 'cw' and core.s['bcn_enable']
+    app.beacon_now()
+    core._tx_thread.join(20)
+    app.update_beacon_info()
+    core.s['bcn_enable'] = False
+    app.on_call()
+    core._tx_thread.join(60)
+    app.poll()
+
     # level meter / clocks
     core.peak_max = 0.5
     app.update_meter()
@@ -133,8 +174,9 @@ def main():
 
     log = open(A.LOG_FILE, encoding='utf-8').read()
     assert 'UI ERROR' not in log, log[log.find('UI ERROR') - 200:][:3000]
-    print('OK  GUI: built, events handled, limits marked, Selcall banner/answer, meter/overload, '
-          '«Выключено» ports, help, RU/EN and light/dark rebuild — no UI errors')
+    print('OK  GUI: built, events handled, limits marked, Selcall and HFPager call banners/answers, macros, '
+          'beacon (CW), meter/overload, «Выключено» ports, scenarios, help, RU/EN and light/dark rebuild — '
+          'no UI errors')
 
 
 if __name__ == '__main__':

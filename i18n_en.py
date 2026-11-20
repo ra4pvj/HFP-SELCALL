@@ -603,4 +603,118 @@ EN = {
         '%d/252 bytes · air time ≈ %.0f s · # %d',
     '%d/%d симв.%s%s · в эфире: вызов ≈ %.1f с, сообщение ≈ %.1f с':
         '%d/%d chars%s%s · air time: call ≈ %.1f s, message ≈ %.1f s',
+    'CW: нет передаваемых символов.':
+        'CW: no characters to send.',
+    '%s  %s ОТВЕТ В ЭФИР → %s':
+        '%s  %s ANSWER ON AIR → %s',
+    '%s  CW: %s':
+        '%s  CW: %s',
+    'Запрос %s от ID %d — отвечаю мелодией в эфир':
+        'Request %s from ID %d — answering with a melody on air',
+    'Маяк: %s':
+        'Beacon: %s',
+    'передан':
+        'sent',
+    'Маяк: ошибка %s':
+        'Beacon: error %s',
+    'Вызов и сообщения на мой ID':
+        'Calls and messages to my ID',
+    'Маяк':
+        'Beacon',
+    'Макросы (кнопки под чатом)':
+        'Macros (buttons under the chat)',
+    'следующий маяк через %d:%02d (в %s UTC)':
+        'next beacon in %d:%02d (at %s UTC)',
+    'оба':
+        'both',
+    'Протокол':
+        'Protocol',
+    'От ID HFPager':
+        'From HFPager ID',
+    'От Selcall ID':
+        'From Selcall ID',
+    '№':
+        '#',
+    'Подпись кнопки':
+        'Button caption',
+    'Что':
+        'What',
+    'Кому (пусто — из поля)':
+        'To (empty = from the field)',
+    'Текст':
+        'Text',
+    'Сразу':
+        'At once',
+    'маяк выключен':
+        'beacon is off',
+    'Макросы…':
+        'Macros…',
+    'Текст вызова (кнопка «Вызов»):':
+        'Call text («Call» button):',
+    'Звонок при вызове':
+        'Ring on a call',
+    'Звук входящего сообщения':
+        'Incoming message sound',
+    'Ответ в эфир на вызов (один раз, уровень TX):':
+        'Answer a call on air (once, TX level):',
+    'Слушать эфир после вызова, с:':
+        'Listen to the air after a call, s:',
+    'Включать внешнее устройство при вызове':
+        'Switch the external device on at a call',
+    'Отвечать мелодией в эфир на сообщение':
+        'Answer with a melody on air to the message',
+    '(на мой ID или всем, ID 0):':
+        '(to my ID or to all, ID 0):',
+    'Мой ID, скорость и тон 0 должны совпадать с настройками корреспондентов. Порог приёма: больше — меньше ложных срабатываний, меньше — чувствительнее. Звуковые устройства, уровень TX, PTT, устройство звонка и внешнее устройство — на вкладке «Трансивер и аудио». Ответ в эфир и ответ на BCN REQ — автоматическая передача.':
+        'My ID, speed and tone 0 must match the settings of the other stations. Receive threshold: higher — fewer false triggers, lower — more sensitive. Sound devices, TX level, PTT, the ring device and the external device are on the «Transceiver & audio» tab. The answer on air and the BCN REQ answer are automatic transmissions.',
+    'Звонок и прослушивание:':
+        'Ring and listening:',
+    'Маяк и макросы':
+        'Beacon & macros',
+    'Маяк включён':
+        'Beacon on',
+    'каждые, мин:':
+        'every, min:',
+    'в заданное время UTC (ЧЧ:ММ через пробел):':
+        'at UTC times (HH:MM separated by spaces):',
+    'Что передавать:':
+        'What to send:',
+    'кому (ID):':
+        'to (ID):',
+    'CW: скорость, WPM:':
+        'CW: speed, WPM:',
+    'тон, Гц:':
+        'tone, Hz:',
+    'Текст маяка:':
+        'Beacon text:',
+    'Передать маяк сейчас':
+        'Send beacon now',
+    'Маяк не начинает передачу, пока идёт приём сигнала или своя передача — ждёт. «HFPager: кадр маяк» — как маяк приложения HFPager (тип 0x06, всем). Пустой текст: «Beacon from <мой ID>». Selcall: вызов или сообщение на ID «кому». CW — текст телеграфом (латиница, цифры, русские буквы).':
+        'The beacon does not start while a signal is being received or we are transmitting — it waits. «HFPager: beacon frame» is like the HFPager app beacon (type 0x06, to all). Empty text: «Beacon from <my ID>». Selcall: a call or a message to the «to» ID. CW — the text in Morse (Latin, digits, Russian letters).',
+    'Сохранить макросы':
+        'Save macros',
+    'Кнопка показывается, если у макроса есть подпись. «Сразу» — нажатие сразу передаёт; без галочки — только заполняет поля под чатом.':
+        'A button is shown when the macro has a caption. «At once» — a click transmits immediately; without it the click only fills the fields under the chat.',
+    'Выполнять сценарии при получении сообщений на мой ID (HFPager — мой ID, Selcall — мой Selcall ID, сообщение с текстом)':
+        'Run scenarios on messages to my ID (HFPager — my ID, Selcall — my Selcall ID, a message call with text)',
+    'От Selcall ID:':
+        'From Selcall ID:',
+    '[%s] %s ОТВЕТ В ЭФИР → %s   (≈ %.1f с)':
+        '[%s] %s ANSWER ON AIR → %s   (≈ %.1f s)',
+    'Передача CW…':
+        'Transmitting CW…',
+    '[%s] CW: %s   (передача ≈ %.0f с)':
+        '[%s] CW: %s   (transmission ≈ %.0f s)',
+    'HFPager: кадр «маяк»':
+        'HFPager: beacon frame',
+    'HFPager: сообщение':
+        'HFPager: message',
+    'HFPager: вызов (CALL)':
+        'HFPager: call (CALL)',
+    'Selcall: вызов':
+        'Selcall: call',
+    'Selcall: сообщение':
+        'Selcall: message',
+    'CW (телеграф)':
+        'CW (Morse)',
 }

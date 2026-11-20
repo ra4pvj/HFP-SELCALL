@@ -26,6 +26,7 @@ import hfpager_rx as R
 import hfpager_ptt as P
 import hfpager_rig as G
 import selcall_engine as SE
+import cw as CW
 from i18n import T
 import copy
 
@@ -45,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta2'
+APP_VERSION = '0.3.0-beta3'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -76,7 +77,30 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 # input channel of the sound card: 0 = auto (the one with signal), 1 = left, 2 = right
                 in_channel=0,
                 # ---- program (stage 1 of 0.3): look, language, clocks, folders
-                lang='ru', theme='light', clock_tz='MSK', log_dir='', tab=0, geometry='')
+                lang='ru', theme='light', clock_tz='MSK', log_dir='', tab=0, geometry='',
+                # ---- HFPager call / ring / answer (stage 2 of 0.3), same as for Selcall
+                call_text='CALL', hfp_ring=True, hfp_ring_style='codan', hfp_ring_seconds=30.0,
+                hfp_msg_sound=True, hfp_msg_style='beep', hfp_ring_air=True, hfp_answer_style='kalinka',
+                hfp_listen_after_call=True, hfp_listen_seconds=60.0, hfp_ext_enabled=False,
+                # answer with a melody on air to the message "BCN REQ" addressed to me (or to everybody, ID 0)
+                bcn_req_enable=True, bcn_req_text='BCN REQ', bcn_req_style='kalinka',
+                # message / call macros: 10 buttons under the chat
+                macros=None,
+                # beacon: every N minutes or at given UTC times; HFPager beacon / message, Selcall call / message, CW
+                bcn_enable=False, bcn_mode='interval', bcn_interval=30.0, bcn_times='00:00 06:00 12:00 18:00',
+                bcn_kind='hfp_beacon', bcn_to='0', bcn_text='', bcn_cw_wpm=20.0, bcn_cw_tone=800.0)
+
+MACRO_KINDS = ['hfp_msg', 'hfp_call', 'sel_call', 'sel_msg']
+BEACON_KINDS = ['hfp_beacon', 'hfp_msg', 'sel_call', 'sel_msg', 'cw']
+
+
+def default_macros():
+    return [dict(label='CQ', kind='hfp_msg', to='0', text='CQ CQ DE RA4PVJ', now=False),
+            dict(label='QRU?', kind='hfp_msg', to='', text='QRU?', now=True),
+            dict(label='73', kind='hfp_msg', to='', text='73!', now=False),
+            dict(label='CALL', kind='hfp_call', to='', text='', now=True),
+            dict(label='Selcall', kind='sel_call', to='', text='', now=True)] + \
+        [dict(label='', kind='hfp_msg', to='', text='', now=False) for _ in range(5)]
 
 
 CLIP_LEVEL = 0.98      # |sample| >= 0.98 of full scale (-0.18 dBFS) = input overload (also in hfpager_rx)
@@ -99,6 +123,9 @@ class Core:
         self.load()
         if not isinstance(self.s.get('scenarios'), list) or not self.s['scenarios']:
             self.s['scenarios'] = copy.deepcopy(G.DEFAULT_SCENARIOS)
+        m = self.s.get('macros')
+        if not isinstance(m, list) or len(m) != 10:
+            self.s['macros'] = default_macros()
         self.engine = None
         self.stream = None
         self.fs = 48000
@@ -134,7 +161,11 @@ class Core:
         self.last_restart = 0.0
         self.peak_max = 0.0           # max |sample| since the GUI last read it (level meter, dBFS)
         self.clip_time = 0.0          # last time the input reached the overload level
+        self.bcn_last = time.time()       # beacon: time of the last one (interval mode counts from here)
+        self.bcn_minute = None            # beacon: 'HH:MM' already served (time mode)
+        self.bcn_next = None              # beacon: unix time of the next one, for the GUI
         threading.Thread(target=self._rx_watchdog, daemon=True).start()
+        threading.Thread(target=self._beacon_loop, daemon=True).start()
 
     # ---- settings
     def load(self):
@@ -365,36 +396,61 @@ class Core:
             datetime.datetime.fromtimestamp(when).strftime('%Y-%m-%d %H:%M:%S'), kind, c['from'], c['to'],
             '' if c['ecc_ok'] else T(' [СОМНИТЕЛЬНО]'), T(' [своя передача]') if own else '', c['message'] or '—'))
         self.q.put(('sel_rx', c, when, mine, own))
+        if (self.s.get('rig_scen_enable') and mine and not own and c['ecc_ok'] and c['message']
+                and c['eos'] != 'ACK-BQ'):
+            threading.Thread(target=self.run_scenario, args=(c['message'], c['from']),
+                             kwargs=dict(proto='sel'), daemon=True).start()
 
     def ring_dev(self):
         return self._idx(self.s.get('sel_ring_dev')) if self.s.get('sel_ring_dev') else None
 
-    def ring(self, answer=False):
+    def ring(self, answer=False, prefix='sel_'):
         """start the incoming-call ring (answer=True: play the answer signal once, as a preview);
-        returns error text or None"""
-        style = self.s.get('sel_answer_style', 'kalinka') if answer else self.s.get('sel_ring_style', 'codan')
-        return self.ringer.start(self.ring_dev(), style, float(self.s.get('sel_ring_volume', 0.5)),
-                                 float(self.s.get('sel_ring_seconds', 30.0)), answer=answer)
+        prefix 'sel_' = Selcall settings, 'hfp_' = HFPager; returns error text or None"""
+        return self.ringer.start(self.ring_dev(), self.ring_style(prefix, answer),
+                                 float(self.s.get('sel_ring_volume', 0.5)),
+                                 float(self.s.get(prefix + 'ring_seconds', 30.0)), answer=answer)
 
-    def send_answer(self, to_id):
+    def send_answer(self, to_id, style=None, label='SELCALL'):
         """answer on air: the answer signal once (melody ~2.9 s or tones 2.5 s) so the calling station hears
         that the call was received; returns error text or None"""
         if self.tx_busy:
             return T('Ответ в эфир не передан: идёт передача.')
         if self.sd is None:
             return T('Звуковая библиотека недоступна: %s') % SD_ERROR
-        sig = SE.answer_pattern(self.s.get('sel_answer_style', 'kalinka'), self.fs, float(self.s['tx_level']))
+        style = style or self.s.get('sel_answer_style', 'kalinka')
+        sig = SE.answer_pattern(style, self.fs, float(self.s['tx_level']))
         lead = np.zeros(int(float(self.s['ptt_delay']) * self.fs), np.float32)
         audio = np.concatenate((lead, sig, np.zeros(int(0.3 * self.fs), np.float32))).astype(np.float32)
         self.last_tx_error = None
         self.tx_busy = True
         self._tx_meta = None
-        self.q.put(('sel_answer_start', SE.digits(to_id), len(audio) / self.fs))
+        self.q.put(('sel_answer_start', SE.digits(to_id), len(audio) / self.fs, label))
         self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, self._idx(self.s['out_dev'])),
                                            daemon=True)
         self._tx_thread.start()
-        self.log(T('%s  SELCALL ОТВЕТ В ЭФИР → %s') % (self._stamp(), SE.digits(to_id)))
+        self.log(T('%s  %s ОТВЕТ В ЭФИР → %s') % (self._stamp(), label, SE.digits(to_id)))
         return None
+
+    def after_tx(self, fn, delay=1.0, timeout=120.0):
+        """run fn() in a thread once the transmitter is free (after `delay` s); e.g. answer after an auto-ACK"""
+        def work():
+            time.sleep(delay)
+            t0 = time.time()
+            while self.tx_busy and time.time() - t0 < timeout:
+                time.sleep(0.3)
+            if self.tx_busy:
+                return
+            time.sleep(0.5)
+            fn()
+        threading.Thread(target=work, daemon=True).start()
+
+    def ring_style(self, prefix, answer=False):
+        return self.s.get(prefix + ('answer_style' if answer else 'ring_style'), 'kalinka' if answer else 'codan')
+
+    def play_once(self, style):
+        """incoming-message sound: the pattern once, on the ring device"""
+        return self.ringer.start(self.ring_dev(), style, float(self.s.get('sel_ring_volume', 0.5)), 5.0, answer=True)
 
     # ---- listening to the air after a call (voice message / the station's reply)
     def start_listen(self, seconds=None):
@@ -522,10 +578,21 @@ class Core:
         self.log(T('%s  %s  %d → %d  №%d  (%s Бод)%s: %s') % (
             self._stamp(), T('МАЯК  ') if fr.get('b0') == 0x06 else T('ПРИЁМ  '), fr['sender'], fr['dest'],
             fr['counter'], fr['speed'], T(' [повтор]') if dup else '', fr['text'].decode('cp1251', 'replace')))
-        if (self.s.get('rig_scen_enable') and fr.get('kind') == 'msg' and fr['dest'] == int(self.s['my_id'])
-                and not dup):
+        text_n = ' '.join(fr['text'].decode('cp1251', 'replace').upper().split())
+        to_me = fr.get('kind') == 'msg' and fr['dest'] == int(self.s['my_id'])
+        if (self.s.get('rig_scen_enable') and to_me and not dup):
             threading.Thread(target=self.run_scenario,
                              args=(fr['text'].decode('cp1251', 'replace'), fr['sender']), daemon=True).start()
+        if to_me and not dup:
+            is_call = text_n == ' '.join(str(self.s.get('call_text') or 'CALL').upper().split())
+            self.q.put(('hfp_call' if is_call else 'hfp_msg_to_me', fr))
+        bq = ' '.join(str(self.s.get('bcn_req_text') or 'BCN REQ').upper().split())
+        if (self.s.get('bcn_req_enable') and fr.get('kind') == 'msg' and not dup and text_n == bq
+                and fr['dest'] in (int(self.s['my_id']), 0)):
+            snd = fr['sender']
+            self.sys(T('Запрос %s от ID %d — отвечаю мелодией в эфир') % (bq, snd))
+            self.after_tx(lambda: self._answer_or_log(snd, self.s.get('bcn_req_style', 'kalinka'), 'HFPager ' + bq),
+                          delay=1.5)
         if (self.s.get('outbox_enable') and fr.get('kind') == 'msg' and fr['dest'] == int(self.s['my_id'])
                 and not dup and ' '.join(fr['text'].decode('cp1251', 'replace').upper().split())
                 == ' '.join(str(self.s.get('outbox_trigger', 'QRU?')).upper().split())):
@@ -708,10 +775,25 @@ class Core:
             self.log(T('%s  ТРАНСИВЕР  %s') % (self._stamp(), line))
         return ok
 
-    def run_scenario(self, text, sender, manual=False):
+    def scenario_rows(self, proto):
+        """rows usable for a message of protocol 'hfp' / 'sel': the sender check of a Selcall message uses
+        the 'Selcall ID' column (Selcall IDs are compared as numbers, 0123 == 123)"""
+        rows = []
+        for r in self.s['scenarios']:
+            p = r.get('proto', 'both')
+            if p not in ('both', proto):
+                rows.append(dict(r, on=False))          # keep the indexes = table row numbers
+                continue
+            rows.append(dict(r, **{'from': r.get('sel_from', '')}) if proto == 'sel' else r)
+        return rows
+
+    def run_scenario(self, text, sender, manual=False, proto='hfp'):
         """find the first matching scenario for a message and execute it; returns a status string"""
         try:
-            hit = G.match_rows(self.s['scenarios'], text, None if manual else sender)
+            if proto == 'sel' and sender is not None:
+                sender = int(SE.digits(sender) or 0)
+            rows = self.s['scenarios'] if manual else self.scenario_rows(proto)
+            hit = G.match_rows(rows, text, None if manual else sender)
         except G.RigError as ex:
             self.sys(T('Сценарий: %s') % ex)
             return str(ex)
@@ -720,6 +802,11 @@ class Core:
         idx, actions = hit
         self.run_actions_logged(actions, T('сценарий %d «%s»') % (idx + 1, text))
         return actions
+
+    def _answer_or_log(self, to, style, label):
+        err = self.send_answer(str(to), style=style, label=label)
+        if err:
+            self.sys(err)
 
     def send_ack(self, fr):
         """experimental: confirm delivery of a received message"""
@@ -749,16 +836,122 @@ class Core:
         nsb = 1 + (nbytes + 11) // 12
         return (sp['pre'] + 1 + 60 * nsb + 2) / sp['baud']
 
-    def build_audio(self, dest, sender, counter, text_bytes, speed, f0, level, ptt_delay, ack):
+    def build_audio(self, dest, sender, counter, text_bytes, speed, f0, level, ptt_delay, ack, b0=0x05):
         with R.MODEM_LOCK:
             M.set_speed(speed)
-            nib = M.tx_nibbles(M.frame_nibbles(dest, sender, counter, text_bytes,
+            nib = M.tx_nibbles(M.frame_nibbles(dest, sender, counter, text_bytes, b0=b0,
                                                b1=0xA2 if ack else 0xA0))
             tones = M.nibbles_to_tones(nib)
             audio = M.synth(tones, fs=self.fs, f0=f0, amp=level, lead=ptt_delay, tail=0.3)
         return audio.astype(np.float32)
 
-    def send(self, to_id, text, force_ack=False):
+    def send_call(self, to_id):
+        """HFPager call: the message CALL (text configurable) sent at once"""
+        return self.send(to_id, str(self.s.get('call_text') or 'CALL'))
+
+    def send_hfp_beacon(self, text):
+        """HFPager beacon frame (type 0x06, destination 0), like the HFPager app's \"Beacon from …\""""
+        return self.send(0, text, beacon=True)
+
+    def send_cw(self, text):
+        if self.tx_busy:
+            return T('Передача уже идёт.')
+        if self.sd is None:
+            return T('Звуковая библиотека недоступна: %s') % SD_ERROR
+        if not CW.morse(text):
+            return T('CW: нет передаваемых символов.')
+        audio = CW.cw_audio(text, self.fs, wpm=float(self.s.get('bcn_cw_wpm', 20)),
+                            tone=float(self.s.get('bcn_cw_tone', 800)), level=float(self.s['tx_level']),
+                            lead=float(self.s['ptt_delay']))
+        self.last_tx_error = None
+        self.tx_busy = True
+        self._tx_meta = None
+        self.q.put(('cw_start', text, len(audio) / self.fs))
+        self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, self._idx(self.s['out_dev'])),
+                                           daemon=True)
+        self._tx_thread.start()
+        self.log(T('%s  CW: %s') % (self._stamp(), text))
+        return None
+
+    # ---- beacon (by interval or at given UTC times)
+    @staticmethod
+    def parse_times(text):
+        out = []
+        for tok in str(text).replace(',', ' ').replace(';', ' ').split():
+            try:
+                h, m = tok.split(':')
+                h, m = int(h), int(m)
+                if 0 <= h < 24 and 0 <= m < 60:
+                    out.append('%02d:%02d' % (h, m))
+            except ValueError:
+                pass
+        return sorted(set(out))
+
+    def beacon_text(self):
+        t = str(self.s.get('bcn_text') or '').strip()
+        if t:
+            return t
+        return 'Beacon from %s' % (self.s.get('my_id'),)
+
+    def send_beacon(self):
+        """one beacon of the configured kind; returns error text or None"""
+        kind, text, to = self.s.get('bcn_kind', 'hfp_beacon'), self.beacon_text(), str(self.s.get('bcn_to') or '0')
+        if kind == 'hfp_beacon':
+            return self.send_hfp_beacon(text)
+        if kind == 'hfp_msg':
+            return self.send(to, text)
+        if kind == 'sel_call':
+            return self.send_selcall(to, None)
+        if kind == 'sel_msg':
+            return self.send_selcall(to, text)
+        return self.send_cw(text)
+
+    def beacon_due(self, now=None):
+        """(due now?, unix time of the next beacon or None)"""
+        now = time.time() if now is None else now
+        if self.s.get('bcn_mode') == 'times':
+            times = self.parse_times(self.s.get('bcn_times', ''))
+            if not times:
+                return False, None
+            u = datetime.datetime.utcfromtimestamp(now)
+            hm = u.strftime('%H:%M')
+            due = hm in times and self.bcn_minute != u.strftime('%Y-%m-%d ') + hm
+            nxt = None
+            for d in (0, 1):
+                day = u.date() + datetime.timedelta(days=d)
+                for t in times:
+                    h, m = map(int, t.split(':'))
+                    cand = (datetime.datetime(day.year, day.month, day.day, h, m) -
+                            datetime.datetime(1970, 1, 1)).total_seconds()
+                    if cand > now - 60 and (nxt is None or cand < nxt):
+                        nxt = cand
+            return due, nxt
+        iv = max(1.0, float(self.s.get('bcn_interval') or 30)) * 60
+        return now - self.bcn_last >= iv, self.bcn_last + iv
+
+    def _beacon_loop(self):
+        while True:
+            time.sleep(2.0)
+            try:
+                if not self.s.get('bcn_enable'):
+                    self.bcn_next = None
+                    continue
+                due, self.bcn_next = self.beacon_due()
+                if not due:
+                    continue
+                # do not transmit over a signal being received or our own transmission: wait (up to the next check)
+                busy = self.tx_busy or (self.engine is not None and getattr(self.engine, '_seg', None) is not None)
+                if busy:
+                    continue
+                now = time.time()
+                self.bcn_last = now
+                self.bcn_minute = datetime.datetime.utcfromtimestamp(now).strftime('%Y-%m-%d %H:%M')
+                err = self.send_beacon()
+                self.sys(T('Маяк: %s') % (err or T('передан')))
+            except Exception as ex:
+                self.sys(T('Маяк: ошибка %s') % ex)
+
+    def send(self, to_id, text, force_ack=False, beacon=False):
         """validate and start transmission; returns error text or None"""
         if self.tx_busy:
             return T('Передача уже идёт.')
@@ -780,16 +973,17 @@ class Core:
             return T('Частота нулевого тона должна быть в диапазоне 300…2000 Гц.')
         counter = int(self.s['counter']) & 0xFF
         out = self._idx(self.s['out_dev'])
-        want_ack = bool(self.s['ack']) or bool(force_ack)
+        want_ack = (bool(self.s['ack']) or bool(force_ack)) and not beacon
         audio = self.build_audio(to, my, counter, data, speed, f0, float(self.s['tx_level']),
-                                 float(self.s['ptt_delay']), want_ack)
+                                 float(self.s['ptt_delay']), want_ack, b0=0x06 if beacon else 0x05)
         self.last_key = None
         if want_ack:
             crc = M.header_crc(to, my, counter, data, b1=0xA2)
             self.pending[(counter, crc)] = (to, text, time.time())
             self.last_key = (counter, crc)
         self.s['counter'] = (counter + 1) & 0xFF
-        self.s['to_id'] = to
+        if not beacon:
+            self.s['to_id'] = to
         self.save()
         self.last_tx_error = None
         self.tx_busy = True

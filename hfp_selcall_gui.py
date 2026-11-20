@@ -406,6 +406,7 @@ class App:
         self.build_hfp_tab()
         self.build_selcall_tab()
         self.build_rig_tab()
+        self.build_beacon_tab()
         self.build_program_tab()
         try:
             self.nb.select(int(core.s.get('tab', 0)))
@@ -419,7 +420,8 @@ class App:
         for text, tag in self.chat_lines[-2000:]:
             self._insert(text, tag)
         if self.banner_call is not None:
-            self.show_banner(*self.banner_call, ring=False)
+            c_, t_, p_ = self.banner_call
+            self.show_banner(c_, t_, ring=False, proto=p_)
 
     def make_vars(self):
         tk, s = self.tk, self.core.s
@@ -457,6 +459,23 @@ class App:
             sel_listen_seconds=sv('sel_listen_seconds', '%g'), sel_listen_after_tx=bv('sel_listen_after_tx'),
             sel_listen_after_tx_seconds=sv('sel_listen_after_tx_seconds', '%g'), sel_centers=tk.StringVar(),
             sel_banner=tk.StringVar(),
+            # HFPager call / ring / answer, BCN REQ
+            call_text=sv('call_text'), hfp_ring=bv('hfp_ring'),
+            hfp_ring_style=tk.StringVar(value=T(styles.get(s['hfp_ring_style'], SE.RING_STYLES[0][1]))),
+            hfp_ring_seconds=sv('hfp_ring_seconds', '%g'), hfp_msg_sound=bv('hfp_msg_sound'),
+            hfp_msg_style=tk.StringVar(value=T(styles.get(s['hfp_msg_style'], SE.RING_STYLES[2][1]))),
+            hfp_ring_air=bv('hfp_ring_air'),
+            hfp_answer_style=tk.StringVar(value=T(styles.get(s['hfp_answer_style'], SE.RING_STYLES[-1][1]))),
+            hfp_listen_after_call=bv('hfp_listen_after_call'), hfp_listen_seconds=sv('hfp_listen_seconds', '%g'),
+            hfp_ext_enabled=bv('hfp_ext_enabled'),
+            bcn_req_enable=bv('bcn_req_enable'), bcn_req_text=sv('bcn_req_text'),
+            bcn_req_style=tk.StringVar(value=T(styles.get(s['bcn_req_style'], SE.RING_STYLES[-1][1]))),
+            # beacon
+            bcn_enable=bv('bcn_enable'), bcn_mode=tk.StringVar(value=s.get('bcn_mode', 'interval')),
+            bcn_interval=sv('bcn_interval', '%g'), bcn_times=sv('bcn_times'),
+            bcn_kind=tk.StringVar(value=self.kind_label(s.get('bcn_kind', 'hfp_beacon'))),
+            bcn_to=sv('bcn_to'), bcn_text=sv('bcn_text'), bcn_cw_wpm=sv('bcn_cw_wpm', '%g'),
+            bcn_cw_tone=sv('bcn_cw_tone', '%g'), bcn_next=tk.StringVar(value=''),
             # CAT
             rig_proto=sv('rig_proto'), rig_port=tk.StringVar(value=s['rig_port'] or T(PORT_OFF)),
             rig_baud=sv('rig_baud'), rig_freq=tk.StringVar(value='7.100'), rig_mode=tk.StringVar(value='USB'),
@@ -467,6 +486,21 @@ class App:
             clock_tz=tk.StringVar(value=tz_label(s.get('clock_tz', 'MSK'))),
             log_dir=tk.StringVar(value=self.core.data_dir()),
         )
+
+    KINDS = [('hfp_beacon', 'HFPager: кадр «маяк»'), ('hfp_msg', 'HFPager: сообщение'),
+             ('hfp_call', 'HFPager: вызов (CALL)'), ('sel_call', 'Selcall: вызов'), ('sel_msg', 'Selcall: сообщение'),
+             ('cw', 'CW (телеграф)')]
+
+    @classmethod
+    def kind_label(cls, key):
+        return T(dict(cls.KINDS).get(key, key))
+
+    @classmethod
+    def kind_key(cls, label):
+        for k, t in cls.KINDS:
+            if T(t) == label:
+                return k
+        return None
 
     @staticmethod
     def in_channels():
@@ -748,6 +782,8 @@ class App:
         self.btn_stop.pack(side='right')
         self.btn = ttk.Button(r, text=T('Отправить'), command=self.on_send)
         self.btn.pack(side='right', padx=4)
+        self.btn_call = ttk.Button(r, text=T('Вызов'), command=self.on_call)
+        self.btn_call.pack(side='right', padx=4)
 
         s = ttk.LabelFrame(f, text=T('HF Selcall (CCIR 493-4, CODAN)'), padding=6)
         s.grid(row=0, column=1, sticky='nsew', padx=(4, 0))
@@ -773,6 +809,49 @@ class App:
         for k in ('sel_dot_seconds', 'sel_my_id', 'sel_to_id'):
             self.var[k].trace_add('write', lambda *a: self.sel_update_counter())
         self.var['speed'].trace_add('write', lambda *a: self.update_counter())
+        # macro buttons (only those with a caption), above the message fields
+        self.macro_bar = ttk.Frame(parent)
+        self.macro_bar.pack(side='bottom', fill='x', pady=(4, 0))
+        self.fill_macro_bar()
+
+    def fill_macro_bar(self):
+        ttk = self.ttk
+        for w in self.macro_bar.winfo_children():
+            w.destroy()
+        n = 0
+        for i, m in enumerate(self.core.s.get('macros') or []):
+            if str(m.get('label', '')).strip():
+                ttk.Button(self.macro_bar, text=m['label'], command=lambda i_=i: self.run_macro(i_)).pack(
+                    side='left', padx=(0, 4))
+                n += 1
+        ttk.Button(self.macro_bar, text=T('Макросы…'), command=lambda: self.nb.select(self.beacon_tab)).pack(
+            side='right')
+
+    def run_macro(self, i):
+        """macro: fills the fields; with «сразу» it is sent at once"""
+        m = self.core.s['macros'][i]
+        kind, to, text = m.get('kind', 'hfp_msg'), str(m.get('to', '')).strip(), m.get('text', '')
+        if kind.startswith('hfp'):
+            if to:
+                self.var['to_id'].set(to)
+            if kind == 'hfp_msg':
+                self.msg.set(text)
+        else:
+            if to:
+                self.var['sel_to_id'].set(to)
+            if kind == 'sel_msg':
+                self.sel_msg.set(text)
+        if not m.get('now'):
+            (self.msg if kind.startswith('hfp') else self.sel_msg).w.focus_set()
+            return
+        if kind == 'hfp_msg':
+            self.on_send()
+        elif kind == 'hfp_call':
+            self.on_call()
+        elif kind == 'sel_call':
+            self.sel_send(False)
+        else:
+            self.sel_send(True)
 
     # ------------------------------------------------------------------ tab: HFPager
     def build_hfp_tab(self):
@@ -797,6 +876,51 @@ class App:
         ttk.Checkbutton(o, text=T('Запрос подтверждения'), variable=self.var['ack']).pack(side='left', padx=8)
         ttk.Checkbutton(o, text=T('Автоподтверждение'), variable=self.var['auto_ack']).pack(side='left', padx=8)
         ttk.Checkbutton(o, text=T('Фильтр ID'), variable=self.var['only_mine']).pack(side='left', padx=8)
+        styles = [T(t) for _k, t in SE.RING_STYLES]
+        g = ttk.LabelFrame(f, text=T('Вызов и сообщения на мой ID'), padding=6)
+        g.pack(fill='x', pady=(8, 0))
+        r = ttk.Frame(g)
+        r.pack(fill='x')
+        ttk.Label(r, text=T('Текст вызова (кнопка «Вызов»):')).pack(side='left', padx=4)
+        ttk.Entry(r, textvariable=self.var['call_text'], width=10).pack(side='left')
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(4, 0))
+        ttk.Checkbutton(r, text=T('Звонок при вызове'), variable=self.var['hfp_ring']).pack(side='left', padx=4)
+        ttk.Combobox(r, textvariable=self.var['hfp_ring_style'], values=styles, width=22,
+                     state='readonly').pack(side='left', padx=4)
+        ttk.Label(r, text=T('длительность, с:')).pack(side='left', padx=(8, 2))
+        ttk.Entry(r, textvariable=self.var['hfp_ring_seconds'], width=5).pack(side='left')
+        ttk.Button(r, text=T('Проверить звонок'), command=lambda: self.test_ring('hfp_')).pack(side='left', padx=8)
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(4, 0))
+        ttk.Checkbutton(r, text=T('Звук входящего сообщения'), variable=self.var['hfp_msg_sound']).pack(
+            side='left', padx=4)
+        ttk.Combobox(r, textvariable=self.var['hfp_msg_style'], values=styles, width=22,
+                     state='readonly').pack(side='left', padx=4)
+        ttk.Button(r, text=T('Прослушать'), command=lambda: self.preview('hfp_msg_style')).pack(side='left', padx=4)
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(4, 0))
+        ttk.Checkbutton(r, text=T('Ответ в эфир на вызов (один раз, уровень TX):'),
+                        variable=self.var['hfp_ring_air']).pack(side='left', padx=4)
+        ttk.Combobox(r, textvariable=self.var['hfp_answer_style'], values=styles, width=22,
+                     state='readonly').pack(side='left', padx=4)
+        ttk.Button(r, text=T('Прослушать'), command=lambda: self.preview('hfp_answer_style')).pack(side='left',
+                                                                                                padx=4)
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(4, 0))
+        ttk.Checkbutton(r, text=T('Слушать эфир после вызова, с:'),
+                        variable=self.var['hfp_listen_after_call']).pack(side='left', padx=4)
+        ttk.Entry(r, textvariable=self.var['hfp_listen_seconds'], width=5).pack(side='left')
+        ttk.Checkbutton(r, text=T('Включать внешнее устройство при вызове'),
+                        variable=self.var['hfp_ext_enabled']).pack(side='left', padx=(16, 4))
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(4, 0))
+        ttk.Checkbutton(r, text=T('Отвечать мелодией в эфир на сообщение'), variable=self.var['bcn_req_enable']
+                        ).pack(side='left', padx=4)
+        ttk.Entry(r, textvariable=self.var['bcn_req_text'], width=10).pack(side='left')
+        ttk.Label(r, text=T('(на мой ID или всем, ID 0):')).pack(side='left', padx=4)
+        ttk.Combobox(r, textvariable=self.var['bcn_req_style'], values=styles, width=22,
+                     state='readonly').pack(side='left', padx=4)
         b = ttk.Frame(f)
         b.pack(fill='x', pady=8)
         ttk.Button(b, text=T('Применить'), command=self.apply).pack(side='left')
@@ -804,7 +928,8 @@ class App:
                                                                                                   padx=8)
         ttk.Label(f, text=T('Мой ID, скорость и тон 0 должны совпадать с настройками корреспондентов. '
                             'Порог приёма: больше — меньше ложных срабатываний, меньше — чувствительнее. '
-                            'Звуковые устройства, уровень TX и PTT — на вкладке «Трансивер и аудио».'),
+                            'Звуковые устройства, уровень TX, PTT, устройство звонка и внешнее устройство — на вкладке '
+                            '«Трансивер и аудио». Ответ в эфир и ответ на BCN REQ — автоматическая передача.'),
                   foreground=self.colors()['dim'], wraplength=900).pack(anchor='w')
 
     # ------------------------------------------------------------------ tab: Selcall
@@ -840,9 +965,6 @@ class App:
                      state='readonly').pack(side='left', padx=4)
         ttk.Label(r, text=T('длительность, с:')).pack(side='left', padx=(8, 2))
         ttk.Entry(r, textvariable=self.var['sel_ring_seconds'], width=5).pack(side='left')
-        ttk.Label(r, text=T('на:')).pack(side='left', padx=(8, 4))
-        self.cb_ring = ttk.Combobox(r, textvariable=self.var['sel_ring_dev'], width=34, state='readonly')
-        self.cb_ring.pack(side='left')
         ttk.Button(r, text=T('Проверить звонок'), command=self.test_ring).pack(side='left', padx=8)
         r = ttk.Frame(g)
         r.pack(fill='x', pady=(4, 0))
@@ -904,6 +1026,9 @@ class App:
         ttk.Label(a, text=T('Выход (передача):')).grid(row=1, column=0, sticky='e', padx=4, pady=3)
         self.cb_out = ttk.Combobox(a, textvariable=self.var['out_dev'], width=48, state='readonly')
         self.cb_out.grid(row=1, column=1, sticky='w')
+        ttk.Label(a, text=T('Звонок и прослушивание:')).grid(row=4, column=0, sticky='e', padx=4, pady=3)
+        self.cb_ring = ttk.Combobox(a, textvariable=self.var['sel_ring_dev'], width=48, state='readonly')
+        self.cb_ring.grid(row=4, column=1, sticky='w')
         o = ttk.Frame(a)
         o.grid(row=2, column=0, columnspan=4, sticky='w', pady=3)
         ttk.Label(o, text=T('Уровень TX:')).pack(side='left', padx=4)
@@ -1026,6 +1151,106 @@ class App:
                              'COM-порт и он нужен для PTT — выберите здесь «Выключено».'),
                   foreground=dim, wraplength=880).pack(anchor='w', padx=4, pady=(4, 0))
 
+    # ------------------------------------------------------------------ tab: beacon & macros
+    def build_beacon_tab(self):
+        tk, ttk = self.tk, self.ttk
+        f = ttk.Frame(self.nb, padding=8)
+        self.beacon_tab = f
+        self.nb.add(f, text='  ' + T('Маяк и макросы') + '  ')
+        dim = self.colors()['dim']
+        g = ttk.LabelFrame(f, text=T('Маяк'), padding=6)
+        g.pack(fill='x')
+        r = ttk.Frame(g)
+        r.pack(fill='x')
+        ttk.Checkbutton(r, text=T('Маяк включён'), variable=self.var['bcn_enable'], command=self.apply).pack(
+            side='left', padx=4)
+        ttk.Radiobutton(r, text=T('каждые, мин:'), variable=self.var['bcn_mode'], value='interval').pack(
+            side='left', padx=(16, 2))
+        ttk.Entry(r, textvariable=self.var['bcn_interval'], width=6).pack(side='left')
+        ttk.Radiobutton(r, text=T('в заданное время UTC (ЧЧ:ММ через пробел):'), variable=self.var['bcn_mode'],
+                        value='times').pack(side='left', padx=(16, 2))
+        ttk.Entry(r, textvariable=self.var['bcn_times'], width=30).pack(side='left')
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(6, 0))
+        ttk.Label(r, text=T('Что передавать:')).pack(side='left', padx=4)
+        ttk.Combobox(r, textvariable=self.var['bcn_kind'], width=24, state='readonly',
+                     values=[T(t) for k, t in self.KINDS if k != 'hfp_call']).pack(side='left')
+        ttk.Label(r, text=T('кому (ID):')).pack(side='left', padx=(12, 4))
+        ttk.Entry(r, textvariable=self.var['bcn_to'], width=8).pack(side='left')
+        ttk.Label(r, text=T('CW: скорость, WPM:')).pack(side='left', padx=(12, 4))
+        ttk.Entry(r, textvariable=self.var['bcn_cw_wpm'], width=4).pack(side='left')
+        ttk.Label(r, text=T('тон, Гц:')).pack(side='left', padx=(8, 4))
+        ttk.Entry(r, textvariable=self.var['bcn_cw_tone'], width=5).pack(side='left')
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(6, 0))
+        ttk.Label(r, text=T('Текст маяка:')).pack(side='left', padx=4)
+        ttk.Entry(r, textvariable=self.var['bcn_text'], width=60).pack(side='left', fill='x', expand=True)
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(6, 0))
+        ttk.Button(r, text=T('Применить'), command=self.apply).pack(side='left', padx=4)
+        ttk.Button(r, text=T('Передать маяк сейчас'), command=self.beacon_now).pack(side='left', padx=4)
+        ttk.Label(r, textvariable=self.var['bcn_next'], foreground=dim).pack(side='left', padx=12)
+        ttk.Label(g, text=T('Маяк не начинает передачу, пока идёт приём сигнала или своя передача — ждёт. '
+                            '«HFPager: кадр маяк» — как маяк приложения HFPager (тип 0x06, всем). Пустой текст: '
+                            '«Beacon from <мой ID>». Selcall: вызов или сообщение на ID «кому». CW — текст '
+                            'телеграфом (латиница, цифры, русские буквы).'),
+                  foreground=dim, wraplength=900).pack(anchor='w', padx=4, pady=(4, 0))
+
+        g = ttk.LabelFrame(f, text=T('Макросы (кнопки под чатом)'), padding=6)
+        g.pack(fill='both', expand=True, pady=8)
+        hdr = ttk.Frame(g)
+        hdr.pack(fill='x')
+        for col, (t, w) in enumerate(((T('№'), 3), (T('Подпись кнопки'), 14), (T('Что'), 22), (T('Кому (пусто — из поля)'), 18),
+                                      (T('Текст'), 40), (T('Сразу'), 6))):
+            ttk.Label(hdr, text=t, width=w).grid(row=0, column=col, sticky='w', padx=2)
+        self.macro_vars = []
+        kinds = [T(t) for k, t in self.KINDS if k in A.MACRO_KINDS]
+        for i, m in enumerate(self.core.s['macros']):
+            mv = dict(label=tk.StringVar(value=m.get('label', '')), kind=tk.StringVar(value=self.kind_label(
+                m.get('kind', 'hfp_msg'))), to=tk.StringVar(value=str(m.get('to', ''))),
+                      text=tk.StringVar(value=m.get('text', '')), now=tk.BooleanVar(value=bool(m.get('now'))))
+            self.macro_vars.append(mv)
+            ttk.Label(hdr, text=str(i + 1), width=3).grid(row=i + 1, column=0, sticky='w', padx=2)
+            ttk.Entry(hdr, textvariable=mv['label'], width=14).grid(row=i + 1, column=1, sticky='w', padx=2, pady=1)
+            ttk.Combobox(hdr, textvariable=mv['kind'], values=kinds, width=22, state='readonly').grid(
+                row=i + 1, column=2, sticky='w', padx=2)
+            ttk.Entry(hdr, textvariable=mv['to'], width=18).grid(row=i + 1, column=3, sticky='w', padx=2)
+            ttk.Entry(hdr, textvariable=mv['text'], width=40).grid(row=i + 1, column=4, sticky='we', padx=2)
+            ttk.Checkbutton(hdr, variable=mv['now']).grid(row=i + 1, column=5, padx=2)
+        hdr.columnconfigure(4, weight=1)
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(6, 0))
+        ttk.Button(r, text=T('Сохранить макросы'), command=self.save_macros).pack(side='left', padx=4)
+        ttk.Label(r, text=T('Кнопка показывается, если у макроса есть подпись. «Сразу» — нажатие сразу передаёт; '
+                            'без галочки — только заполняет поля под чатом.'), foreground=dim,
+                  wraplength=700).pack(side='left', padx=8)
+
+    def save_macros(self):
+        out = []
+        for mv in self.macro_vars:
+            out.append(dict(label=mv['label'].get().strip(), kind=self.kind_key(mv['kind'].get()) or 'hfp_msg',
+                            to=mv['to'].get().strip(), text=mv['text'].get().strip(), now=bool(mv['now'].get())))
+        self.core.s['macros'] = out
+        self.core.save()
+        self.fill_macro_bar()
+
+    def beacon_now(self):
+        self.apply()
+        err = self.core.send_beacon()
+        if err:
+            self.mb.showwarning(T('Маяк'), err)
+        else:
+            self.core.bcn_last = time.time()
+
+    def update_beacon_info(self):
+        nxt = self.core.bcn_next
+        if not self.core.s.get('bcn_enable') or nxt is None:
+            self.var['bcn_next'].set(T('маяк выключен') if not self.core.s.get('bcn_enable') else '')
+            return
+        left = max(0, int(nxt - time.time()))
+        self.var['bcn_next'].set(T('следующий маяк через %d:%02d (в %s UTC)') % (
+            left // 60, left % 60, datetime.datetime.utcfromtimestamp(nxt).strftime('%H:%M')))
+
     # ------------------------------------------------------------------ tab: program
     def build_program_tab(self):
         ttk = self.ttk
@@ -1141,6 +1366,25 @@ class App:
         if old != (s['sel_ext_port'], s['sel_ext_line'], s['sel_ext_invert']):
             self.core.ext.close(old[1] or 'RTS+DTR', bool(old[2]))
             self.core.ext_manual = False
+        # HFPager call / ring / answer
+        s['call_text'] = v['call_text'].get().strip() or 'CALL'
+        for k in ('hfp_ring', 'hfp_msg_sound', 'hfp_ring_air', 'hfp_listen_after_call', 'hfp_ext_enabled',
+                  'bcn_req_enable', 'bcn_enable'):
+            s[k] = bool(v[k].get())
+        num('hfp_ring_seconds', 3.0, 600.0)
+        num('hfp_listen_seconds', 5, 600)
+        for k in ('hfp_ring_style', 'hfp_msg_style', 'hfp_answer_style', 'bcn_req_style'):
+            s[k] = rev.get(v[k].get(), s.get(k, 'kalinka'))
+        s['bcn_req_text'] = v['bcn_req_text'].get().strip() or 'BCN REQ'
+        # beacon
+        s['bcn_mode'] = 'times' if v['bcn_mode'].get() == 'times' else 'interval'
+        num('bcn_interval', 1, 1440)
+        s['bcn_times'] = ' '.join(self.core.parse_times(v['bcn_times'].get()))
+        s['bcn_kind'] = self.kind_key(v['bcn_kind'].get()) or s.get('bcn_kind', 'hfp_beacon')
+        s['bcn_to'] = v['bcn_to'].get().strip() or '0'
+        s['bcn_text'] = v['bcn_text'].get().strip()
+        num('bcn_cw_wpm', 5, 60)
+        num('bcn_cw_tone', 300, 2500)
         # CAT
         s['rig_proto'] = v['rig_proto'].get()
         s['rig_port'] = port('rig_port')
@@ -1149,6 +1393,10 @@ class App:
             s['tab'] = self.nb.index(self.nb.select())
         except Exception:
             pass
+        if getattr(self, 'macro_vars', None):
+            s['macros'] = [dict(label=mv['label'].get().strip(), kind=self.kind_key(mv['kind'].get()) or 'hfp_msg',
+                                to=mv['to'].get().strip(), text=mv['text'].get().strip(), now=bool(mv['now'].get()))
+                           for mv in self.macro_vars]
 
     def apply(self):
         self.pull()
@@ -1209,6 +1457,12 @@ class App:
             self.msg.set('')
         self.update_counter()
 
+    def on_call(self):
+        self.pull()
+        err = self.core.send_call(self.var['to_id'].get())
+        if err:
+            self.mb.showwarning(T('Вызов'), err)
+
     def update_counter(self):
         if not hasattr(self, 'msg'):
             return
@@ -1249,21 +1503,23 @@ class App:
 
     def set_tx_buttons(self, busy):
         st = ['disabled'] if busy else ['!disabled']
-        for b in (self.btn, self.sel_btn_call, self.sel_btn_msg):
+        for b in (self.btn, self.btn_call, self.sel_btn_call, self.sel_btn_msg):
             try:
                 b.state(st)
             except Exception:
                 pass
 
     # ------------------------------------------------------------------ incoming Selcall banner, ring, ext
-    def show_banner(self, c, title, ring=True):
+    def show_banner(self, c, title, ring=True, proto='sel'):
+        """incoming call / message to my ID: yellow bar; ring, external device, answer on air, listening by the
+        settings of the protocol (prefix sel_ / hfp_)"""
         ttk, tk = self.ttk, self.tk
-        self.banner_call = (c, title)
+        self.banner_call = (c, title, proto)
         for w in self.banner_box.winfo_children():
             w.destroy()
         b = tk.Frame(self.banner_box, background='#ffd84d')
         b.pack(fill='x', padx=8, pady=(4, 0))
-        txt = '☎  %s %s %s' % (T(title), T('от'), c['from'])
+        txt = '☎  %s%s %s %s' % ('HFPager ' if proto == 'hfp' else 'Selcall ', T(title), T('от'), c['from'])
         if c['message']:
             txt += ':  ' + c['message']
         tk.Label(b, text=txt, background='#ffd84d', foreground='#000000',
@@ -1280,29 +1536,30 @@ class App:
                 ctypes.windll.user32.FlashWindow(int(self.root.wm_frame(), 16), True)
         except Exception:
             pass
-        core = self.core
-        if core.s.get('sel_ring'):
-            err = core.ring()
+        core, p = self.core, proto + '_'
+        if core.s.get(p + 'ring'):
+            err = core.ring(prefix=p)
             if err:
                 self.add('[%s] • %s %s' % (self.now(), T('Звонок:'), err), 'sys')
-        if core.s.get('sel_ext_enabled') and core.s.get('sel_ext_port'):
+        if core.s.get(p + 'ext_enabled') and core.s.get('sel_ext_port'):
             core.ext_pulse()
-        if core.s.get('sel_listen_after_call', True):
-            if core.s.get('sel_ring_air'):
-                core.listen_pending = float(core.s.get('sel_listen_seconds') or 60)
-            else:
-                core.start_listen()
-        if core.s.get('sel_ring_air'):
+        listen = core.s.get(p + 'listen_after_call', True)
+        lsec = float(core.s.get(p + 'listen_seconds') or 60)
+        if listen and not core.s.get(p + 'ring_air'):
+            core.start_listen(lsec)
+        if core.s.get(p + 'ring_air'):
             frm = c['from']
+            label = 'HFPager' if proto == 'hfp' else 'SELCALL'
 
-            def air():          # a short pause: the calling station has time to switch to receive
-                err = core.send_answer(frm)
+            def air():          # the calling station has time to switch to receive (HFPager: after an auto-ACK)
+                core.listen_pending = lsec if listen else None
+                err = core.send_answer(frm, style=core.ring_style(p, answer=True), label=label)
                 if err:
                     core.listen_pending = None
-                    self.add('[%s] • %s' % (self.now(), err), 'sys')
-                    if core.s.get('sel_listen_after_call', True):
-                        core.start_listen()
-            self.root.after(1000, air)
+                    self.q.put(('sys', err))
+                    if listen:
+                        core.start_listen(lsec)
+            core.after_tx(air, delay=2.0 if proto == 'hfp' else 1.0)
 
     def dismiss(self):
         self.core.ringer.stop()
@@ -1312,18 +1569,31 @@ class App:
 
     def answer(self):
         if self.banner_call:
+            if self.banner_call[2] == 'hfp':
+                self.var['to_id'].set(self.banner_call[0]['from'])
+                self.nb.select(0)
+                self.msg.w.focus_set()
+                self.dismiss()
+                return
             self.var['sel_to_id'].set(self.banner_call[0]['from'])
             self.nb.select(0)
             self.sel_msg.w.focus_set()
         self.dismiss()
 
-    def test_ring(self):
+    def test_ring(self, prefix='sel_'):
         self.apply()
         if self.core.ringer.active:
             self.core.ringer.stop()
             return
-        err = self.core.ringer.start(self.core.ring_dev(), self.core.s['sel_ring_style'],
+        err = self.core.ringer.start(self.core.ring_dev(), self.core.ring_style(prefix),
                                      self.core.s['sel_ring_volume'], 3.0)
+        if err:
+            self.mb.showwarning(T('Звонок'), err)
+
+    def preview(self, key):
+        """play a melody / signal from the settings once, on the ring device (not on air)"""
+        self.apply()
+        err = self.core.play_once(self.core.s.get(key, 'kalinka'))
         if err:
             self.mb.showwarning(T('Звонок'), err)
 
@@ -1398,7 +1668,9 @@ class App:
         self.rig_ui['win'] = w
         rv = dict(enable=tk.BooleanVar(value=core.s['rig_scen_enable']), on=tk.BooleanVar(value=True),
                   trig=tk.StringVar(), frm=tk.StringVar(), act=tk.StringVar(), test=tk.StringVar(),
-                  status=tk.StringVar(value=''))
+                  status=tk.StringVar(value=''), proto=tk.StringVar(value=T('оба')), sfrm=tk.StringVar())
+        PROTOS = [('both', T('оба')), ('hfp', 'HFPager'), ('sel', 'Selcall')]
+        p2l, l2p = dict(PROTOS), {l_: k_ for k_, l_ in PROTOS}
         self.rig_ui['status'] = rv['status']
 
         def sync():
@@ -1408,11 +1680,15 @@ class App:
 
         sf = ttk.Frame(w, padding=8)
         sf.pack(fill='both', expand=True)
-        ttk.Checkbutton(sf, text=T('Выполнять сценарии при получении сообщений, адресованных моему ID'),
+        ttk.Checkbutton(sf, text=T('Выполнять сценарии при получении сообщений на мой ID (HFPager — мой ID, '
+                                   'Selcall — мой Selcall ID, сообщение с текстом)'),
                         variable=rv['enable'], command=sync).pack(anchor='w', padx=4, pady=2)
-        tv = ttk.Treeview(sf, columns=('n', 'on', 'trigger', 'from', 'action'), show='headings', height=10)
-        for c, t, wd in (('n', '№', 32), ('on', T('Вкл'), 40), ('trigger', T('Текст сообщения (* = любое слово)'), 230),
-                         ('from', T('От ID (пусто = любой)'), 130), ('action', T('Действие'), 330)):
+        tv = ttk.Treeview(sf, columns=('n', 'on', 'proto', 'trigger', 'from', 'sfrom', 'action'), show='headings',
+                          height=10)
+        for c, t, wd in (('n', '№', 32), ('on', T('Вкл'), 40), ('proto', T('Протокол'), 80),
+                         ('trigger', T('Текст сообщения (* = любое слово)'), 220),
+                         ('from', T('От ID HFPager'), 110), ('sfrom', T('От Selcall ID'), 110),
+                         ('action', T('Действие'), 300)):
             tv.heading(c, text=t)
             tv.column(c, width=wd, anchor='w')
         tv.pack(fill='both', expand=True, padx=4, pady=2)
@@ -1422,7 +1698,9 @@ class App:
                 tv.delete(i)
             for n, r in enumerate(core.s['scenarios']):
                 tv.insert('', 'end', iid=str(n), values=(n + 1, '✔' if r.get('on', True) else '',
-                                                         r.get('trigger', ''), r.get('from', ''), r.get('action', '')))
+                                                         p2l.get(r.get('proto', 'both'), T('оба')),
+                                                         r.get('trigger', ''), r.get('from', ''),
+                                                         r.get('sel_from', ''), r.get('action', '')))
             if sel is not None and str(sel) in tv.get_children():
                 tv.selection_set(str(sel))
 
@@ -1438,11 +1716,14 @@ class App:
             rv['on'].set(bool(r.get('on', True)))
             rv['trig'].set(r.get('trigger', ''))
             rv['frm'].set(str(r.get('from', '')))
+            rv['sfrm'].set(str(r.get('sel_from', '')))
+            rv['proto'].set(p2l.get(r.get('proto', 'both'), T('оба')))
             rv['act'].set(r.get('action', ''))
 
         def form():
             return {'on': bool(rv['on'].get()), 'trigger': rv['trig'].get().strip().upper(),
-                    'from': rv['frm'].get().strip(), 'action': rv['act'].get().strip()}
+                    'from': rv['frm'].get().strip(), 'sel_from': rv['sfrm'].get().strip(),
+                    'proto': l2p.get(rv['proto'].get(), 'both'), 'action': rv['act'].get().strip()}
 
         def valid(row):
             if not row['trigger'] or not row['action']:
@@ -1492,12 +1773,16 @@ class App:
         ef = ttk.Frame(sf)
         ef.pack(fill='x', pady=2)
         ttk.Checkbutton(ef, text=T('Вкл'), variable=rv['on']).pack(side='left', padx=4)
+        ttk.Combobox(ef, textvariable=rv['proto'], values=[l_ for _k, l_ in PROTOS], width=8,
+                     state='readonly').pack(side='left', padx=2)
         ttk.Label(ef, text=T('Сообщение:')).pack(side='left')
-        ttk.Entry(ef, textvariable=rv['trig'], width=24).pack(side='left', padx=2)
+        ttk.Entry(ef, textvariable=rv['trig'], width=20).pack(side='left', padx=2)
         ttk.Label(ef, text=T('От ID:')).pack(side='left', padx=(6, 0))
-        ttk.Entry(ef, textvariable=rv['frm'], width=10).pack(side='left', padx=2)
+        ttk.Entry(ef, textvariable=rv['frm'], width=8).pack(side='left', padx=2)
+        ttk.Label(ef, text=T('От Selcall ID:')).pack(side='left', padx=(6, 0))
+        ttk.Entry(ef, textvariable=rv['sfrm'], width=8).pack(side='left', padx=2)
         ttk.Label(ef, text=T('Действие:')).pack(side='left', padx=(6, 0))
-        ttk.Entry(ef, textvariable=rv['act'], width=34).pack(side='left', padx=2)
+        ttk.Entry(ef, textvariable=rv['act'], width=30).pack(side='left', padx=2)
         bf = ttk.Frame(sf)
         bf.pack(fill='x', pady=2)
         for t, c in ((T('Добавить'), add_row), (T('Заменить'), replace_row), (T('Удалить'), delete_row),
@@ -1841,8 +2126,22 @@ class App:
                 add('[%s] • %s' % (now(), info['text']), 'sys')
         elif kind == 'sel_answer_start':
             to, secs = item[1], item[2]
-            add(T('[%s] SELCALL ОТВЕТ В ЭФИР → %s   (≈ %.1f с)') % (now(), to, secs), 'mine')
+            label = item[3] if len(item) > 3 else 'SELCALL'
+            add(T('[%s] %s ОТВЕТ В ЭФИР → %s   (≈ %.1f с)') % (now(), label, to, secs), 'mine')
             self.var['status'].set(T('Ответ в эфир…'))
+            self.set_tx_buttons(True)
+        elif kind == 'hfp_call':
+            fr = item[1]
+            self.show_banner({'from': str(fr['sender']), 'message': ''}, 'Вызов', proto='hfp')
+        elif kind == 'hfp_msg_to_me':
+            fr = item[1]
+            if core.s.get('hfp_msg_sound'):
+                err = core.play_once(core.s.get('hfp_msg_style', 'beep'))
+                if err:
+                    add('[%s] • %s %s' % (now(), T('Звонок:'), err), 'sys')
+        elif kind == 'cw_start':
+            add(T('[%s] CW: %s   (передача ≈ %.0f с)') % (now(), item[1], item[2]), 'mine')
+            self.var['status'].set(T('Передача CW…'))
             self.set_tx_buttons(True)
         elif kind in ('listen_state', 'ext_state'):
             self.update_sel_buttons()
@@ -1912,6 +2211,7 @@ class App:
             if int(t) != getattr(self, '_last_sec', None):
                 self._last_sec = int(t)
                 self.tick_clock()
+                self.update_beacon_info()
         except Exception:
             pass
         self.root.after(100, self.poll)

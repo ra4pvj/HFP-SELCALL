@@ -11,7 +11,8 @@ from i18n_en import EN      # noqa: E402
 SPEC = re.compile(r'%[-+ #0]*\d*(?:\.\d+)?[sdfxXcr%]')
 FILES = ['hfp_selcall_app.py', 'hfp_selcall_gui.py', 'selcall_engine.py']
 EXTRA = ['Двухтональный', 'Трель', 'Короткие гудки', 'Мелодия «Калинка»', 'Выключено', 'системный выход',
-         'Подтверждение', 'Сообщение', 'Вызов']
+         'Подтверждение', 'Сообщение', 'Вызов', 'HFPager: кадр «маяк»', 'HFPager: сообщение', 'HFPager: вызов (CALL)',
+         'Selcall: вызов', 'Selcall: сообщение', 'CW (телеграф)']
 
 
 def strings():

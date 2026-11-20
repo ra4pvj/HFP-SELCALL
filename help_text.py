@@ -39,6 +39,22 @@ HF Selcall: «Кому (Selcall ID)»; «Вызов» — вызов без те
 На вкладке «Трансивер и аудио» можно установить частоту и режим, выбрать диапазон, перестроиться шагом. «Сценарии…» — таблица действий при получении сообщения HFPager на ваш ID (например, «QSY 7.120» → перестроить трансивер).
 В списках COM-портов есть пункт «Выключено» — порт не используется. Если на компьютере один COM-порт, он не может одновременно быть портом PTT/CAT и портом внешнего устройства; при совпадении приоритет у PTT.
 
+## Вызов HFPager и звонок
+Кнопка «Вызов» в поле HFPager сразу отправляет на ID «Кому» сообщение CALL (текст вызова меняется на вкладке «HFPager»). Когда такое сообщение приходит на ваш ID, появляется жёлтая панель «☎ HFPager Вызов от …», звучит звонок, включается внешнее устройство (если отмечено), в эфир уходит ответ мелодией (после автоподтверждения, если оно включено), затем включается прослушивание эфира — всё как у Selcall, настройки на вкладке «HFPager».
+Обычное сообщение на ваш ID сопровождается коротким «звуком входящего сообщения» (мелодия выбирается).
+
+## Ответ на BCN REQ
+Если пришло сообщение «BCN REQ» (на ваш ID или всем, ID 0), программа отвечает мелодией в эфир. Текст запроса и мелодия — на вкладке «HFPager». Это автоматическая передача.
+
+## Макросы
+Вкладка «Маяк и макросы»: 10 макросов — подпись кнопки, что делать (сообщение или вызов HFPager, вызов или сообщение Selcall), кому (пусто — из поля под чатом), текст и «Сразу». Кнопки с подписями видны над полями ввода под чатом. Без «Сразу» макрос только заполняет поля.
+
+## Маяк
+Вкладка «Маяк и макросы»: маяк каждые N минут или в заданное время UTC. Что передавать: кадр «маяк» HFPager (как маяк приложения HFPager, всем), сообщение HFPager, вызов или сообщение Selcall, или текст телеграфом (CW, скорость и тон задаются). Маяк ждёт, пока идёт приём или своя передача. «Передать маяк сейчас» — проверка.
+
+## Сценарии для обоих протоколов
+В таблице сценариев есть столбцы «Протокол» (оба / HFPager / Selcall), «От ID HFPager» и «От Selcall ID». Сценарий выполняется на сообщение HFPager на ваш ID или на Selcall-сообщение с текстом на ваш Selcall ID.
+
 ## Внешнее устройство
 Сирена, лампа или реле на отдельном COM-порту: при вызове на ваш ID на линию RTS/DTR подаётся «1» на заданное время. «Импульс» — проверка, «Внешн.» — включить вручную до повторного нажатия.
 
@@ -95,6 +111,22 @@ Listening: after a call (and after your own transmission) the input audio goes t
 ## Transceiver (CAT) and scenarios
 On the "Transceiver & audio" tab you can set frequency and mode, choose a band and tune in steps. "Scenarios…" — a table of actions on an HFPager message to your ID (e.g. "QSY 7.120" → retune the transceiver).
 COM port lists contain "Off" — the port is not used. With a single COM port it cannot be both the PTT/CAT port and the external-device port; if they are the same, PTT wins.
+
+## HFPager call and ring
+The «Call» button in the HFPager field sends the message CALL to the «To» ID at once (the call text is set on the «HFPager» tab). When such a message arrives for your ID, a yellow bar «☎ HFPager Call from …» appears, the ring sounds, the external device switches on (if ticked), the answer melody goes on air (after the auto-confirmation, if that is on), then listening starts — all like Selcall; the settings are on the «HFPager» tab.
+An ordinary message to your ID plays a short «incoming message sound» (selectable).
+
+## Answer to BCN REQ
+When the message «BCN REQ» arrives (to your ID or to all, ID 0), the program answers with a melody on air. The request text and the melody are on the «HFPager» tab. This is an automatic transmission.
+
+## Macros
+«Beacon & macros» tab: 10 macros — button caption, what to do (HFPager message or call, Selcall call or message), to (empty = from the field under the chat), text and «At once». Buttons with captions appear above the input fields under the chat. Without «At once» a macro only fills the fields.
+
+## Beacon
+«Beacon & macros» tab: a beacon every N minutes or at given UTC times. What to send: an HFPager beacon frame (like the HFPager app beacon, to all), an HFPager message, a Selcall call or message, or text in Morse (CW, speed and tone are set). The beacon waits while a signal is being received or we transmit. «Send beacon now» tests it.
+
+## Scenarios for both protocols
+The scenario table has the columns «Protocol» (both / HFPager / Selcall), «From HFPager ID» and «From Selcall ID». A scenario runs on an HFPager message to your ID or on a Selcall message call with text to your Selcall ID.
 
 ## External device
 A siren, lamp or relay on a separate COM port: on a call to your ID "1" is put on RTS/DTR for the set time. "Pulse" tests it, "Ext." switches it on until pressed again.

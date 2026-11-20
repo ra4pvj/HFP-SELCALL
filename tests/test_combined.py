@@ -11,6 +11,7 @@ Headless check of HFP+SELCALL (no sound card, no GUI):
     python tests/test_combined.py
 """
 import os
+import datetime
 import queue
 import sys
 import tempfile
@@ -262,8 +263,84 @@ def test_answer_listen_ext(tmp):
         assert 2.0 < len(x) / 8000 < 3.2 and np.abs(x).max() <= 0.5 + 1e-6, (st, len(x) / 8000)
 
 
+def test_stage2(tmp):
+    """HFPager CALL / BCN REQ, scenarios for both protocols, CW, beacon (frame type 0x06 decoded back)"""
+    import cw as CWm
+    core, q = make_core(tmp)
+    core.fs = 48000
+    FakeSD.played.clear()
+    my = int(core.s['my_id'])
+    fr = dict(kind='msg', b0=0x05, b1=0xA0, dest=my, sender=3, counter=1, text=b'call', speed='5.86', length=4,
+              hdr_crc=0)
+    core._on_frame(dict(fr), {})
+    core._on_frame(dict(fr, counter=2, text=b'HELLO'), {})
+    items = drain(q, 0.3)
+    kinds = [i[0] for i in items]
+    assert 'hfp_call' in kinds and 'hfp_msg_to_me' in kinds, kinds
+    print('OK  HFPager: «CALL» to my ID → call event; other text → incoming-message event')
+
+    core.s.update(bcn_req_enable=True, bcn_req_style='kalinka')
+    core._on_frame(dict(fr, counter=3, text=b'BCN  req', dest=0), {})
+    t0 = time.time()
+    while not FakeSD.played and time.time() - t0 < 6:
+        time.sleep(0.1)
+    if core._tx_thread:
+        core._tx_thread.join(10)
+    assert FakeSD.played, 'no melody after BCN REQ'
+    audio, fs = FakeSD.played[-1]
+    want = 16 * SE.KALINKA_QUARTER + core.s['ptt_delay'] + 0.3
+    assert abs(len(audio) / fs - want) < 0.03, len(audio) / fs
+    print('OK  BCN REQ (to ID 0) → melody on air, %.2f s' % (len(audio) / fs))
+
+    ran = []
+    core.run_actions_logged = lambda actions, why: ran.append(actions) or True
+    core.s['scenarios'] = [dict(on=True, proto='hfp', trigger='QSY *', **{'from': '3'}, sel_from='', action='A {1}'),
+                           dict(on=True, proto='sel', trigger='QSY *', **{'from': ''}, sel_from='0055',
+                                action='B {1}'),
+                           dict(on=True, proto='both', trigger='HOME', **{'from': ''}, sel_from='', action='C')]
+    assert core.run_scenario('QSY 7.1', 3, proto='hfp') == 'A 7.1'
+    assert core.run_scenario('QSY 7.1', '55', proto='sel') == 'B 7.1'          # 0055 == 55
+    assert core.run_scenario('QSY 7.1', '56', proto='sel') is None
+    assert core.run_scenario('QSY 7.1', 4, proto='hfp') is None
+    assert core.run_scenario('HOME', '1234', proto='sel') == 'C' and core.run_scenario('HOME', 9) == 'C'
+    print('OK  scenarios: protocol column, HFPager ID and Selcall ID columns')
+
+    x = CWm.cw_audio('PARIS', 8000, wpm=20, tone=800, level=0.5, lead=0, tail=0)
+    assert abs(len(x) / 8000 - 43 * 0.06) < 0.01, len(x) / 8000
+    assert CWm.morse('SOS ПРИВЕТ') == '... --- ... / .--. .-. .. .-- . -'
+    print('OK  CW: PARIS = 43 units at 20 WPM (2.58 s); Russian Morse')
+
+    core.s.update(bcn_mode='times', bcn_times='12:00 06:30')
+    noon = (datetime.datetime(2026, 1, 1, 12, 0, 10) - datetime.datetime(1970, 1, 1)).total_seconds()
+    due, nxt = core.beacon_due(noon)
+    assert due and nxt is not None
+    core.bcn_minute = '2026-01-01 12:00'
+    assert not core.beacon_due(noon)[0], 'the same minute must not repeat'
+    core.s.update(bcn_mode='interval', bcn_interval=10)
+    core.bcn_last = noon - 599
+    assert not core.beacon_due(noon)[0] and core.beacon_due(noon + 2)[0]
+    print('OK  beacon schedule: UTC times (once per minute) and interval')
+
+    # beacon frame through the receiver
+    assert core.start_rx()
+    core.sel.stop()
+    core.s.update(speed='23.44', bcn_kind='hfp_beacon', bcn_text='Beacon from RA4PVJ')
+    FakeSD.played.clear()
+    assert core.send_beacon() is None
+    core._tx_thread.join(30)
+    audio, fs = FakeSD.played[-1]
+    gap = np.zeros(3 * fs, np.float32)
+    push(core, np.concatenate([gap, audio, gap, gap]), fs)
+    items = drain(q, 6.0)
+    core.stop_rx()
+    rx = [i for i in items if i[0] == 'rx']
+    assert any(i[1]['b0'] == 0x06 and i[1]['text'] == b'Beacon from RA4PVJ' for i in rx), rx
+    print('OK  HFPager beacon frame (type 0x06) transmitted and decoded back')
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
+        test_stage2(tmp)
         test_selcall_tx(tmp)
         test_real_recording(tmp)
         test_both_receivers(tmp)

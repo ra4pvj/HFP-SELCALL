@@ -47,7 +47,7 @@ jobs:
       - run: pip install "numpy==1.24.4" "sounddevice==0.4.6" "pyserial>=3.5" "pyinstaller==5.13.2"
       - run: python tests/test_combined.py        # same test on Python 3.8 / numpy 1.24 (the Windows 7 stack)
       # one-folder build: nothing is extracted to %TEMP% at start-up (avoids "Failed to extract ... dll")
-      - run: pyinstaller --noconfirm --onedir --windowed --name HFPSelcallApp --collect-all sounddevice --hidden-import hfpager_modem --hidden-import hfpager_rx --hidden-import hfpager_ptt --hidden-import hfpager_rig --hidden-import selcall --hidden-import selcall_engine --hidden-import hfp_selcall_gui --hidden-import i18n --hidden-import i18n_en --hidden-import help_text --icon icon.ico --add-data "icon.png;." --hidden-import serial.tools.list_ports hfp_selcall_app.py
+      - run: pyinstaller --noconfirm --onedir --windowed --name HFPSelcallApp --collect-all sounddevice --hidden-import hfpager_modem --hidden-import hfpager_rx --hidden-import hfpager_ptt --hidden-import hfpager_rig --hidden-import selcall --hidden-import selcall_engine --hidden-import hfp_selcall_gui --hidden-import i18n --hidden-import i18n_en --hidden-import help_text --hidden-import cw --icon icon.ico --add-data "icon.png;." --hidden-import serial.tools.list_ports hfp_selcall_app.py
       - run: Compress-Archive -Path dist\HFPSelcallApp -DestinationPath HFPSelcallApp-windows-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -99,7 +99,7 @@ jobs:
             --add-binary "$PA:." \
             --hidden-import hfpager_modem --hidden-import hfpager_rx --hidden-import hfpager_ptt --hidden-import hfpager_rig \
             --hidden-import selcall --hidden-import selcall_engine --hidden-import hfp_selcall_gui \
-            --hidden-import i18n --hidden-import i18n_en --hidden-import help_text --add-data "icon.png:." \
+            --hidden-import i18n --hidden-import i18n_en --hidden-import help_text --hidden-import cw --add-data "icon.png:." \
             --hidden-import serial.tools.list_ports hfp_selcall_app.py
       - run: tar -czf HFPSelcallApp-linux-x64.tar.gz -C dist HFPSelcallApp
       - uses: actions/upload-artifact@v4
