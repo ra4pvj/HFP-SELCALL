@@ -14,7 +14,7 @@ RU = """# HFP+SELCALL — инструкция
 4. Нажмите «Применить». Первую передачу делайте на эквивалент нагрузки.
 
 ## Главное окно
-Вверху всегда видны: лампы RX/TX, индикатор уровня входа, спектр 300–3000 Гц и часы (UTC и выбранный часовой пояс). Ниже — вкладки; на первой («Чат») только общий журнал обмена.
+Вверху всегда видны: лампы RX/TX, индикатор уровня входа, спектр 300–3000 Гц и часы (UTC и выбранный часовой пояс). Ниже — вкладки. Первая, «Чат и сообщения», — главная: сверху общий журнал обмена, под ним поля ввода сообщений и вызовов HFPager (слева) и HF Selcall (справа).
 Цвета в чате: зелёный жирный — адресованное вам, голубой — чужое, красный — ваши передачи, жёлтый — служебные сообщения.
 Текст из чата можно выделить мышью и скопировать (Ctrl+C или правая кнопка мыши → «Копировать»).
 
@@ -25,13 +25,13 @@ RU = """# HFP+SELCALL — инструкция
 • красный — выше −3 dBFS, опасно.
 Перегрузка — отсчёты достигают 98 % полной шкалы (−0,2 dBFS): появляется надпись «ПЕРЕГРУЗКА ВХОДА». Сигнал искажается, в спектре появляются лишние составляющие, приём ухудшается. Уменьшите уровень на выходе трансивера или в настройках звука системы. Во время перегрузки шкала спектра не подстраивается, чтобы картинка не «прыгала».
 
-## Новое сообщение / вызов
+## Сообщения и вызовы (вкладка «Чат и сообщения»)
 HFPager: «Кому (ID)», текст до 252 символов, «Отправить» (или Enter). Символы сверх предела выделяются красным и не передаются — сократите текст.
 HF Selcall: «Кому (Selcall ID)»; «Вызов» — вызов без текста, «Сообщение» — вызов с текстом (до 64 символов после транслитерации; кириллица передаётся латиницей, если включён «Транслит»).
 «Прервать» останавливает текущую передачу и снимает PTT.
 
 ## Входящий вызов Selcall
-Над вкладками появляется жёлтая панель «☎ … от NNNN» с кнопками «Ответить» (подставляет отправителя и открывает вкладку нового сообщения) и «Сбросить». Звучит звонок (тип, длительность и устройство — на вкладке «HF Selcall»).
+Над вкладками появляется жёлтая панель «☎ … от NNNN» с кнопками «Ответить» (подставляет отправителя в поле Selcall «Кому» под чатом) и «Сбросить». Звучит звонок (тип, длительность и устройство — на вкладке «HF Selcall»).
 Ответ в эфир: через 1 с программа один раз передаёт сигнал ответа (по умолчанию мелодия), чтобы вызывающий слышал, что вызов принят. Это автоматическая передача — выключите, если она не нужна.
 Прослушивание: после вызова (и после своей передачи) звук входа идёт в динамик заданное время, чтобы услышать голосовое сообщение или ответ станции. Кнопка «Слушать» включает прослушивание вручную.
 
@@ -71,7 +71,7 @@ Both receivers listen to the input at the same time; there is no mode switch.
 4. Press "Apply". Make the first transmission into a dummy load.
 
 ## Main window
-Always visible at the top: RX/TX lamps, input level meter, 300–3000 Hz spectrum and the clocks (UTC and a chosen time zone). Below are the tabs; the first one ("Chat") holds only the common message log.
+Always visible at the top: RX/TX lamps, input level meter, 300–3000 Hz spectrum and the clocks (UTC and a chosen time zone). Below are the tabs. The first one, "Chat & messages", is the main page: the common message log on top, and under it the message / call fields for HFPager (left) and HF Selcall (right).
 Chat colours: bold green — addressed to you, cyan — to others, red — your transmissions, yellow — service messages.
 Chat text can be selected and copied (Ctrl+C or right click → "Copy").
 
@@ -82,13 +82,13 @@ The meter shows the peak level in dBFS (0 dBFS = full scale of the sound card):
 • red — above −3 dBFS, dangerous.
 Overload — samples reach 98 % of full scale (−0.2 dBFS): "INPUT OVERLOAD" is shown. The signal is distorted, extra components appear in the spectrum and reception gets worse. Lower the transceiver's output or the system recording level. During an overload the spectrum colour scale is frozen so the picture does not jump.
 
-## New message / call
+## Messages and calls ("Chat & messages" tab)
 HFPager: "To (ID)", text up to 252 characters, "Send" (or Enter). Characters beyond the limit are shown red and are not sent — shorten the text.
 HF Selcall: "To (Selcall ID)"; "Call" — a call without text, "Message" — a call with text (up to 64 characters after transliteration; Cyrillic is sent in Latin letters when "Translit" is on).
 "Abort" stops the current transmission and releases PTT.
 
 ## Incoming Selcall
-A yellow bar "☎ … from NNNN" appears above the tabs with "Answer" (fills in the sender and opens the new-message tab) and "Dismiss". The ring sounds (type, duration and device are on the "HF Selcall" tab).
+A yellow bar "☎ … from NNNN" appears above the tabs with "Answer" (fills in the sender in the Selcall "To" field under the chat) and "Dismiss". The ring sounds (type, duration and device are on the "HF Selcall" tab).
 Answer on air: after 1 s the program transmits the answer signal once (a melody by default) so the caller hears that the call was received. This is an automatic transmission — switch it off if you do not want it.
 Listening: after a call (and after your own transmission) the input audio goes to the loudspeaker for the set time, to hear a voice message or the station's reply. "Listen" switches it on manually.
 

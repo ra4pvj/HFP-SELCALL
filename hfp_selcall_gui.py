@@ -403,7 +403,6 @@ class App:
         self.nb = ttk.Notebook(root)
         self.nb.pack(side='top', fill='both', expand=True, padx=8, pady=(2, 4))
         self.build_chat_tab()
-        self.build_compose_tab()
         self.build_hfp_tab()
         self.build_selcall_tab()
         self.build_rig_tab()
@@ -661,12 +660,14 @@ class App:
     def build_chat_tab(self):
         tk, ttk = self.tk, self.ttk
         f = ttk.Frame(self.nb, padding=4)
-        self.nb.add(f, text='  ' + T('Чат') + '  ')
+        self.nb.add(f, text='  ' + T('Чат и сообщения') + '  ')
+        # chat on top, the message / call fields below it (packed first, so they keep their size and only
+        # the chat shrinks when the window is small)
+        self.build_compose(f)
         bar = ttk.Frame(f)
-        bar.pack(side='bottom', fill='x', pady=(4, 0))
+        bar.pack(side='bottom', fill='x', pady=(2, 2))
         ttk.Checkbutton(bar, text=T('Только адресованные мне (фильтр ID)'), variable=self.var['only_mine'],
                         command=self.apply).pack(side='left')
-        ttk.Button(bar, text=T('Новое сообщение / вызов'), command=lambda: self.nb.select(1)).pack(side='right')
         ttk.Button(bar, text=T('Очистить окно'), command=self.clear_chat).pack(side='right', padx=4)
         ttk.Button(bar, text=T('Журнал (TXT)'), command=self.open_log).pack(side='right', padx=4)
         CF = 13 if sys.platform == 'darwin' else 12
@@ -715,51 +716,55 @@ class App:
         return datetime.datetime.now().strftime('%H:%M:%S')
 
     # ------------------------------------------------------------------ tab: new message / call
-    def build_compose_tab(self):
+    def build_compose(self, parent):
+        """HFPager (left) and HF Selcall (right) message / call fields under the chat"""
         tk, ttk = self.tk, self.ttk
-        f = ttk.Frame(self.nb, padding=8)
-        self.nb.add(f, text='  ' + T('Новое сообщение / вызов') + '  ')
-        font = (A.MONO_FONT, 12)
+        f = ttk.Frame(parent)
+        f.pack(side='bottom', fill='x', pady=(4, 0))
+        f.columnconfigure(0, weight=1, uniform='c')
+        f.columnconfigure(1, weight=1, uniform='c')
+        size = 17 if sys.platform == 'darwin' else 15
+        font = (A.MONO_FONT, size)
+        colors = self.colors() if self.dark else None
+
         h = ttk.LabelFrame(f, text=T('HFPager (PS-18)'), padding=6)
-        h.pack(fill='x', pady=(0, 8))
+        h.grid(row=0, column=0, sticky='nsew', padx=(0, 4))
         r = ttk.Frame(h)
         r.pack(fill='x')
         ttk.Label(r, text=T('Кому (ID):')).pack(side='left')
-        ttk.Entry(r, textvariable=self.var['to_id'], width=8).pack(side='left', padx=(4, 12))
-        ttk.Label(r, text=T('Скорость:')).pack(side='left')
-        ttk.Combobox(r, textvariable=self.var['speed'], values=list(R.M.SPEEDS), width=7,
-                     state='readonly').pack(side='left', padx=4)
-        ttk.Checkbutton(r, text=T('Запрос подтверждения'), variable=self.var['ack']).pack(side='left', padx=8)
-        ttk.Label(h, text=T('Текст (до 252 символов; лишние выделяются красным, Enter — отправить):')).pack(
-            anchor='w', pady=(6, 2))
+        ttk.Entry(r, textvariable=self.var['to_id'], width=7, font=font).pack(side='left', padx=(4, 10))
+        ttk.Combobox(r, textvariable=self.var['speed'], values=list(R.M.SPEEDS), width=6,
+                     state='readonly').pack(side='left')
+        ttk.Label(r, text=T('Бод')).pack(side='left', padx=(2, 8))
+        ttk.Checkbutton(r, text=T('Запрос подтверждения'), variable=self.var['ack']).pack(side='left')
         self.msg = LimitedText(tk, h, 252, cost_hfp, on_change=self.update_counter, on_enter=self.on_send,
-                               width=80, font=font, colors=self.colors() if self.dark else None)
-        self.msg.w.pack(fill='x')
+                               width=30, font=font, colors=colors)
+        self.msg.w.configure(height=3)
+        self.msg.w.pack(fill='x', pady=4)
         r = ttk.Frame(h)
-        r.pack(fill='x', pady=(4, 0))
-        ttk.Label(r, textvariable=self.var['counter']).pack(side='left')
+        r.pack(fill='x')
+        ttk.Label(r, textvariable=self.var['counter'], wraplength=330).pack(side='left')
         self.btn_stop = ttk.Button(r, text=T('Прервать'), command=self.core.abort_tx)
         self.btn_stop.pack(side='right')
         self.btn = ttk.Button(r, text=T('Отправить'), command=self.on_send)
-        self.btn.pack(side='right', padx=6)
+        self.btn.pack(side='right', padx=4)
 
         s = ttk.LabelFrame(f, text=T('HF Selcall (CCIR 493-4, CODAN)'), padding=6)
-        s.pack(fill='x')
+        s.grid(row=0, column=1, sticky='nsew', padx=(4, 0))
         r = ttk.Frame(s)
         r.pack(fill='x')
         ttk.Label(r, text=T('Кому (Selcall ID):')).pack(side='left')
-        ttk.Entry(r, textvariable=self.var['sel_to_id'], width=8).pack(side='left', padx=(4, 12))
+        ttk.Entry(r, textvariable=self.var['sel_to_id'], width=7, font=font).pack(side='left', padx=(4, 10))
         ttk.Checkbutton(r, text=T('Транслит'), variable=self.var['sel_translit'],
                         command=lambda: (self.sel_msg.update())).pack(side='left')
-        ttk.Label(s, text=T('Текст сообщения (до %d символов после транслита; для вызова не нужен):') % SE.MAX_MSG
-                  ).pack(anchor='w', pady=(6, 2))
         self.sel_msg = LimitedText(tk, s, SE.MAX_MSG, cost_selcall(lambda: bool(self.var['sel_translit'].get())),
                                    on_change=self.sel_update_counter, on_enter=lambda: self.sel_send(True),
-                                   width=80, font=font, colors=self.colors() if self.dark else None)
-        self.sel_msg.w.pack(fill='x')
+                                   width=30, font=font, colors=colors)
+        self.sel_msg.w.configure(height=3)
+        self.sel_msg.w.pack(fill='x', pady=4)
         r = ttk.Frame(s)
-        r.pack(fill='x', pady=(4, 0))
-        ttk.Label(r, textvariable=self.var['sel_counter'], wraplength=620).pack(side='left')
+        r.pack(fill='x')
+        ttk.Label(r, textvariable=self.var['sel_counter'], wraplength=280).pack(side='left')
         ttk.Button(r, text=T('Прервать'), command=self.core.abort_tx).pack(side='right')
         self.sel_btn_msg = ttk.Button(r, text=T('Сообщение'), command=lambda: self.sel_send(True))
         self.sel_btn_msg.pack(side='right', padx=4)
@@ -1212,7 +1217,7 @@ class App:
             t = A.Core.air_time(self.var['speed'].get(), max(min(n, 252), 1))
         except Exception:
             t = 0
-        self.var['counter'].set(T('%d/252 байт, время в эфире ≈ %.0f с, сообщение № %d') %
+        self.var['counter'].set(T('%d/252 байт · в эфире ≈ %.0f с · № %d') %
                                 (n, t, int(self.core.s['counter']) & 0xFF))
 
     def sel_send(self, with_text):
@@ -1238,7 +1243,7 @@ class App:
         t_call = SE.air_time(dots, me, to, None)
         t_msg = SE.air_time(dots, me, to, txt or 'X', tl)
         over = len(SE.translit(txt) if tl else txt) > SE.MAX_MSG
-        self.var['sel_counter'].set(T('%d/%d символов%s%s.  Время в эфире: вызов ≈ %.1f с, сообщение ≈ %.1f с') % (
+        self.var['sel_counter'].set(T('%d/%d симв.%s%s · в эфире: вызов ≈ %.1f с, сообщение ≈ %.1f с') % (
             len(tr), SE.MAX_MSG, T(' (лишнее не будет передано)') if over else '',
             ('  → «%s»' % tr) if (tr and tr != txt.strip()) else '', t_call, t_msg))
 
@@ -1308,7 +1313,7 @@ class App:
     def answer(self):
         if self.banner_call:
             self.var['sel_to_id'].set(self.banner_call[0]['from'])
-            self.nb.select(1)
+            self.nb.select(0)
             self.sel_msg.w.focus_set()
         self.dismiss()
 

@@ -597,4 +597,10 @@ EN = {
         'system output',
     'Подтверждение':
         'Confirmation',
+    'Чат и сообщения':
+        'Chat & messages',
+    '%d/252 байт · в эфире ≈ %.0f с · № %d':
+        '%d/252 bytes · air time ≈ %.0f s · # %d',
+    '%d/%d симв.%s%s · в эфире: вызов ≈ %.1f с, сообщение ≈ %.1f с':
+        '%d/%d chars%s%s · air time: call ≈ %.1f s, message ≈ %.1f s',
 }
