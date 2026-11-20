@@ -19,6 +19,7 @@ import time
 import numpy as np
 
 import selcall as S
+from i18n import T
 
 RX_FS = 8000
 MAX_MSG = S.MAX_MSG
@@ -163,7 +164,7 @@ class SelcallEngine:
             try:
                 self.process_now()
             except Exception as ex:
-                self.on_event('error', {'text': 'Ошибка декодера Selcall: %s' % ex})
+                self.on_event('error', {'text': T('Ошибка декодера Selcall: %s') % ex})
 
 
 # ============================================================================ transmitter
@@ -189,9 +190,9 @@ def check_ids(my_id, to_id):
     """returns error text or None"""
     me, to = digits(my_id), digits(to_id)
     if not me or not to:
-        return "Укажите цифровые Selcall ID: свой и получателя (4 или 6 цифр)."
+        return T("Укажите цифровые Selcall ID: свой и получателя (4 или 6 цифр).")
     if len(me) > 10 or len(to) > 10:
-        return "Selcall ID: не больше 10 цифр (обычно 4 или 6)."
+        return T("Selcall ID: не больше 10 цифр (обычно 4 или 6).")
     return None
 
 
@@ -283,7 +284,7 @@ class Ringer:
         """returns error text or None.  answer=True: play the answer signal once (preview, not on air)"""
         self.stop()
         if self.sd is None:
-            return 'звуковая библиотека недоступна'
+            return T('звуковая библиотека недоступна')
         try:
             fs = int(self.sd.query_devices(device, 'output')['default_samplerate'])
         except Exception:
@@ -360,7 +361,7 @@ class Listener:
         """returns error text or None"""
         self.stop()
         if self.sd is None:
-            return 'звуковая библиотека недоступна'
+            return T('звуковая библиотека недоступна')
         self.fs_in, self.level = int(fs_in), float(level)
         self._rest = np.zeros(0, np.float32)
         last = None
@@ -437,9 +438,9 @@ class ExtControl:
             return
         self._close_locked(line, invert)
         if self.serial is None:
-            raise RuntimeError("pyserial недоступен")
+            raise RuntimeError(T("pyserial недоступен"))
         if not port:
-            raise RuntimeError("не выбран COM-порт внешнего устройства")
+            raise RuntimeError(T("не выбран COM-порт внешнего устройства"))
         s = self.serial.Serial()
         s.port = port
         s.baudrate = 9600
@@ -462,7 +463,7 @@ class ExtControl:
                 return None
             except Exception as ex:
                 self.on = False
-                return "Внешнее устройство: %s" % ex
+                return T("Внешнее устройство: %s") % ex
 
     def _close_locked(self, line, invert):
         if self.ser is not None:

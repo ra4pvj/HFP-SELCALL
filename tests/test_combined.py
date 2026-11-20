@@ -71,11 +71,13 @@ class FakeSD:
 
     @classmethod
     def query_devices(cls, *a, **kw):
-        return {'default_samplerate': 48000, 'max_input_channels': cls.in_channels}
+        d = {'name': 'Fake', 'default_samplerate': 48000, 'max_input_channels': cls.in_channels,
+             'max_output_channels': 2, 'hostapi': 0}
+        return [d] if not a and not kw else d
 
     @staticmethod
     def query_hostapis():
-        return []
+        return [{'name': 'Fake API'}]
 
     @classmethod
     def play(cls, audio, fs, device=None):

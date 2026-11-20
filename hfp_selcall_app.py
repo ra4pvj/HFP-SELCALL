@@ -26,6 +26,7 @@ import hfpager_rx as R
 import hfpager_ptt as P
 import hfpager_rig as G
 import selcall_engine as SE
+from i18n import T
 import copy
 
 try:
@@ -44,7 +45,9 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '2026-11-16b'
+APP_VERSION = '0.3.0-beta1'
+APP_NAME = 'HFP+SELCALL'
+COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
 MONO_FONT = 'Menlo' if sys.platform == 'darwin' else ('Consolas' if sys.platform.startswith('win') else 'DejaVu Sans Mono')
 SETTINGS_FILE = os.path.join(APP_DIR, 'settings.json')
@@ -71,7 +74,18 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 sel_listen_after_call=True, sel_listen_seconds=60.0,
                 sel_listen_after_tx=True, sel_listen_after_tx_seconds=60.0, sel_listen_level=1.0,
                 # input channel of the sound card: 0 = auto (the one with signal), 1 = left, 2 = right
-                in_channel=0)
+                in_channel=0,
+                # ---- program (stage 1 of 0.3): look, language, clocks, folders
+                lang='ru', theme='light', clock_tz='MSK', log_dir='', tab=0, geometry='')
+
+
+CLIP_LEVEL = 0.98      # |sample| >= 0.98 of full scale (-0.18 dBFS) = input overload (also in hfpager_rx)
+
+
+def read_peak(core):
+    """peak input level in dBFS since the last call (for the level meter)"""
+    pk, core.peak_max = core.peak_max, 0.0
+    return 20 * np.log10(pk) if pk > 1e-6 else -90.0
 
 
 # ============================================================================== non-GUI core
@@ -118,6 +132,8 @@ class Core:
         self.ch_energy = None
         self.last_audio = time.time()
         self.last_restart = 0.0
+        self.peak_max = 0.0           # max |sample| since the GUI last read it (level meter, dBFS)
+        self.clip_time = 0.0          # last time the input reached the overload level
         threading.Thread(target=self._rx_watchdog, daemon=True).start()
 
     # ---- settings
@@ -134,12 +150,19 @@ class Core:
             with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.s, f, ensure_ascii=False, indent=1)
         except Exception as ex:
-            self.sys('Не удалось сохранить настройки: %s' % ex)
+            self.sys(T('Не удалось сохранить настройки: %s') % ex)
+
+    def data_dir(self):
+        """folder of the journal and of the deferred messages (setting 'log_dir', default Documents/HFPSelcallApp)"""
+        return self.s.get('log_dir') or os.path.dirname(LOG_FILE)
+
+    def log_path(self):
+        return os.path.join(self.s['log_dir'], 'messages.txt') if self.s.get('log_dir') else LOG_FILE
 
     def log(self, line):
         try:
-            os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            os.makedirs(os.path.dirname(self.log_path()), exist_ok=True)
+            with open(self.log_path(), 'a', encoding='utf-8') as f:
                 f.write(line + '\n')
         except Exception:
             pass
@@ -147,19 +170,19 @@ class Core:
     def open_log(self):
         """open the journal in the default text editor; returns error text or None"""
         try:
-            if not os.path.exists(LOG_FILE):
-                self.log('%s  Журнал создан' % datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            if not os.path.exists(self.log_path()):
+                self.log(T('%s  Журнал создан') % datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             if sys.platform.startswith('win'):
-                os.startfile(LOG_FILE)
+                os.startfile(self.log_path())
             elif sys.platform == 'darwin':
                 import subprocess
-                subprocess.Popen(['open', LOG_FILE])
+                subprocess.Popen(['open', self.log_path()])
             else:
                 import subprocess
-                subprocess.Popen(['xdg-open', LOG_FILE])
+                subprocess.Popen(['xdg-open', self.log_path()])
             return None
         except Exception as ex:
-            return 'Не удалось открыть %s: %s' % (LOG_FILE, ex)
+            return T('Не удалось открыть %s: %s') % (self.log_path(), ex)
 
     @staticmethod
     def _stamp():
@@ -184,7 +207,7 @@ class Core:
                 if d['max_output_channels'] > 0:
                     outs.append((i, label))
         except Exception as ex:
-            self.sys('Ошибка опроса звуковых устройств: %s' % ex)
+            self.sys(T('Ошибка опроса звуковых устройств: %s') % ex)
         return ins, outs
 
     @staticmethod
@@ -198,7 +221,7 @@ class Core:
     def start_rx(self):
         self.stop_rx()
         if self.sd is None:
-            self.sys('Звуковая библиотека недоступна: %s' % SD_ERROR)
+            self.sys(T('Звуковая библиотека недоступна: %s') % SD_ERROR)
             return False
         dev = self._idx(self.s['in_dev'])
         # up to 2 channels, ONE of them is used (not the average): on a stereo interface the transceiver is
@@ -235,6 +258,11 @@ class Core:
         def cb(indata, frames, time_info, status):
             self.last_audio = time.time()
             x = indata[:, self._pick_channel(indata)]
+            pk = float(np.max(np.abs(x))) if len(x) else 0.0
+            if pk > self.peak_max:
+                self.peak_max = pk
+            if pk >= CLIP_LEVEL:
+                self.clip_time = self.last_audio
             engine.feed(x)
             if sel is not None:
                 sel.feed(x)
@@ -254,13 +282,13 @@ class Core:
             except Exception as ex:
                 last = ex
         if self.stream is None:
-            self.sys('Не удалось открыть вход звуковой карты: %s' % last)
+            self.sys(T('Не удалось открыть вход звуковой карты: %s') % last)
             return False
-        self.sys('Приём запущен (%d Гц). HFPager: все скорости, АПЧ %s.  Selcall: %s.' %
-                 (fs, 'включена' if self.s['afc'] else 'выключена',
-                  ('мой ID %s, АПЧ %s' % (self.s['sel_my_id'], 'включена' if self.s['sel_afc'] else
-                                          'выключена, центр %.0f Гц' % float(self.s['sel_center'])))
-                  if self.sel is not None else 'выключен'))
+        self.sys(T('Приём запущен (%d Гц). HFPager: все скорости, АПЧ %s.  Selcall: %s.') %
+                 (fs, T('включена') if self.s['afc'] else T('выключена'),
+                  (T('мой ID %s, АПЧ %s') % (self.s['sel_my_id'], T('включена') if self.s['sel_afc'] else
+                                          T('выключена, центр %.0f Гц') % float(self.s['sel_center'])))
+                  if self.sel is not None else T('выключен')))
         return True
 
     def stop_rx(self):
@@ -328,14 +356,14 @@ class Core:
             SE.same_id(t[0], c['to']) and t[1] == (c['message'] or '') and t[2] - 3 <= when <= t[3] + 3
             for t in self.tx_history)
         if c['eos'] == 'ACK-BQ':
-            kind = 'ПОДТВЕРЖДЕНИЕ'
+            kind = T('ПОДТВЕРЖДЕНИЕ')
         elif c['message']:
-            kind = 'СООБЩЕНИЕ'
+            kind = T('СООБЩЕНИЕ')
         else:
-            kind = 'ВЫЗОВ'
+            kind = T('ВЫЗОВ')
         self.log('%s  SELCALL %s  %s → %s%s%s: %s' % (
             datetime.datetime.fromtimestamp(when).strftime('%Y-%m-%d %H:%M:%S'), kind, c['from'], c['to'],
-            '' if c['ecc_ok'] else ' [СОМНИТЕЛЬНО]', ' [своя передача]' if own else '', c['message'] or '—'))
+            '' if c['ecc_ok'] else T(' [СОМНИТЕЛЬНО]'), T(' [своя передача]') if own else '', c['message'] or '—'))
         self.q.put(('sel_rx', c, when, mine, own))
 
     def ring_dev(self):
@@ -352,9 +380,9 @@ class Core:
         """answer on air: the answer signal once (melody ~2.9 s or tones 2.5 s) so the calling station hears
         that the call was received; returns error text or None"""
         if self.tx_busy:
-            return 'Ответ в эфир не передан: идёт передача.'
+            return T('Ответ в эфир не передан: идёт передача.')
         if self.sd is None:
-            return 'Звуковая библиотека недоступна: %s' % SD_ERROR
+            return T('Звуковая библиотека недоступна: %s') % SD_ERROR
         sig = SE.answer_pattern(self.s.get('sel_answer_style', 'kalinka'), self.fs, float(self.s['tx_level']))
         lead = np.zeros(int(float(self.s['ptt_delay']) * self.fs), np.float32)
         audio = np.concatenate((lead, sig, np.zeros(int(0.3 * self.fs), np.float32))).astype(np.float32)
@@ -365,7 +393,7 @@ class Core:
         self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, self._idx(self.s['out_dev'])),
                                            daemon=True)
         self._tx_thread.start()
-        self.log('%s  SELCALL ОТВЕТ В ЭФИР → %s' % (self._stamp(), SE.digits(to_id)))
+        self.log(T('%s  SELCALL ОТВЕТ В ЭФИР → %s') % (self._stamp(), SE.digits(to_id)))
         return None
 
     # ---- listening to the air after a call (voice message / the station's reply)
@@ -375,16 +403,16 @@ class Core:
             return
         self.ringer.stop()                      # the ring has done its job: now listen to the caller
         if self.stream is None:
-            self.q.put(('sys', 'Прослушивание: приём выключен.'))
+            self.q.put(('sys', T('Прослушивание: приём выключен.')))
             return
         err = self.listener.start(self.ring_dev(), self.fs, float(self.s.get('sel_listen_level', 1.0)))
         if err:
-            self.q.put(('sys', 'Прослушивание: %s' % err))
+            self.q.put(('sys', T('Прослушивание: %s') % err))
             return
         if self.listen_timer is not None:
             self.listen_timer.cancel()
         sec = min(600.0, max(5.0, float(seconds or self.s.get('sel_listen_seconds') or 60)))
-        self.q.put(('sys', 'Прослушивание эфира включено на %.0f с' % sec))
+        self.q.put(('sys', T('Прослушивание эфира включено на %.0f с') % sec))
 
         def off():
             if not self.listen_manual:
@@ -408,7 +436,7 @@ class Core:
             self.ringer.stop()
             err = self.listener.start(self.ring_dev(), self.fs, float(self.s.get('sel_listen_level', 1.0)))
             if err:
-                self.q.put(('sys', 'Прослушивание: %s' % err))
+                self.q.put(('sys', T('Прослушивание: %s') % err))
             else:
                 self.listen_manual = True
         self.q.put(('listen_state',))
@@ -424,7 +452,7 @@ class Core:
 
     def _ext_set(self, on):
         if on and self.ext_conflict():
-            self.q.put(('sys', 'Внешнее устройство: порт %s занят PTT/CAT — выберите другой COM-порт'
+            self.q.put(('sys', T('Внешнее устройство: порт %s занят PTT/CAT — выберите другой COM-порт')
                         % self.s['sel_ext_port']))
             return False
         err = self.ext.set(on, self.s.get('sel_ext_port') or '', self.s.get('sel_ext_line') or 'DTR',
@@ -481,9 +509,9 @@ class Core:
             if ev is not None and fr['dest'] == mine and fr['kind'] == 'ack':
                 ev.set()
             self.q.put(('ack', fr, info, hit))
-            self.log('%s  %s       для ID %d, исходное сообщение №%d%s' % (
-                self._stamp(), 'ПОДТВЕРЖДЕНИЕ' if fr['kind'] == 'ack' else 'ОТКАЗ', fr['dest'],
-                fr['orig_counter'], ' (доставлено: «%s»)' % hit[1] if hit else ''))
+            self.log(T('%s  %s       для ID %d, исходное сообщение №%d%s') % (
+                self._stamp(), T('ПОДТВЕРЖДЕНИЕ') if fr['kind'] == 'ack' else T('ОТКАЗ'), fr['dest'],
+                fr['orig_counter'], T(' (доставлено: «%s»)') % hit[1] if hit else ''))
             return
         key = (fr['sender'], fr['dest'], fr['counter'], fr['text'])
         dup = key in self._seen and now - self._seen[key] < 120
@@ -491,9 +519,9 @@ class Core:
         for k in [k for k, t in self._seen.items() if now - t > 600]:
             del self._seen[k]
         self.q.put(('rx', fr, info, dup))
-        self.log('%s  %s  %d → %d  №%d  (%s Бод)%s: %s' % (
-            self._stamp(), 'МАЯК  ' if fr.get('b0') == 0x06 else 'ПРИЁМ  ', fr['sender'], fr['dest'],
-            fr['counter'], fr['speed'], ' [повтор]' if dup else '', fr['text'].decode('cp1251', 'replace')))
+        self.log(T('%s  %s  %d → %d  №%d  (%s Бод)%s: %s') % (
+            self._stamp(), T('МАЯК  ') if fr.get('b0') == 0x06 else T('ПРИЁМ  '), fr['sender'], fr['dest'],
+            fr['counter'], fr['speed'], T(' [повтор]') if dup else '', fr['text'].decode('cp1251', 'replace')))
         if (self.s.get('rig_scen_enable') and fr.get('kind') == 'msg' and fr['dest'] == int(self.s['my_id'])
                 and not dup):
             threading.Thread(target=self.run_scenario,
@@ -507,13 +535,13 @@ class Core:
             threading.Timer(1.5, self.send_ack, args=(fr,)).start()
 
     # ---- deferred messages (sent when the addressee asks "QRU?") -----------------------------------
-    OUTBOX_HEADER = ('# HFPager: отложенные сообщения. Одна строка = одно сообщение:  ID получателя|текст\n'
+    OUTBOX_HEADER = (T('# HFPager: отложенные сообщения. Одна строка = одно сообщение:  ID получателя|текст\n'
                      '# Строки с # и пустые игнорируются. Кодировка UTF-8. Файл можно править вручную или из другой программы:\n'
                      '# приложение перечитывает его при изменении и при запросе QRU?. Отправленные строки удаляются\n'
-                     '# отсюда и дописываются в outbox_sent.txt в формате  дата время|ID|текст\n')
+                     '# отсюда и дописываются в outbox_sent.txt в формате  дата время|ID|текст\n'))
 
     def outbox_path(self):
-        return self.s.get('outbox_file') or OUTBOX_DEFAULT
+        return self.s.get('outbox_file') or os.path.join(self.data_dir(), 'outbox.txt')
 
     def outbox_sent_path(self):
         return os.path.join(os.path.dirname(self.outbox_path()), 'outbox_sent.txt')
@@ -547,7 +575,7 @@ class Core:
                 self._outbox_mtime = os.path.getmtime(path)
                 return None
             except Exception as ex:
-                return 'Не удалось прочитать %s: %s' % (path, ex)
+                return T('Не удалось прочитать %s: %s') % (path, ex)
 
     def outbox_save(self):
         with self._outbox_lock:
@@ -563,7 +591,7 @@ class Core:
                 self._outbox_mtime = os.path.getmtime(path)
                 return None
             except Exception as ex:
-                return 'Не удалось записать %s: %s' % (path, ex)
+                return T('Не удалось записать %s: %s') % (path, ex)
 
     def outbox_changed_on_disk(self):
         try:
@@ -604,28 +632,28 @@ class Core:
             if need_ack and key:
                 self._deferred[key] = ev
             if err:
-                self.sys('Отложенное сообщение для %d не отправлено: %s' % (it['to'], err))
+                self.sys(T('Отложенное сообщение для %d не отправлено: %s') % (it['to'], err))
                 break
             while self.tx_busy:                 # wait until the transmission has really finished
                 time.sleep(0.3)
             if self.last_tx_error:              # PTT / sound failure: keep the message in the queue
-                self.sys('Отложенное сообщение для %d НЕ отправлено (останется в очереди): %s' % (
+                self.sys(T('Отложенное сообщение для %d НЕ отправлено (останется в очереди): %s') % (
                     it['to'], self.last_tx_error))
                 break
             if need_ack:
                 tmo = float(self.s.get('outbox_ack_timeout', 60))
-                self.sys('Отложенное сообщение для %d передано, жду подтверждение до %.0f с…' % (it['to'], tmo))
+                self.sys(T('Отложенное сообщение для %d передано, жду подтверждение до %.0f с…') % (it['to'], tmo))
                 got = ev.wait(tmo)
                 self._deferred.pop(key, None)
                 if not got:
-                    self.sys('Подтверждения от ID %d нет – сообщение остаётся в очереди '
-                             '(будет отправлено снова при следующем запросе).' % it['to'])
-                    self.log('%s  ОТЛОЖЕННОЕ БЕЗ ПОДТВЕРЖДЕНИЯ  → %d: %s' % (self._stamp(), it['to'], it['text']))
+                    self.sys(T('Подтверждения от ID %d нет – сообщение остаётся в очереди '
+                             '(будет отправлено снова при следующем запросе).') % it['to'])
+                    self.log(T('%s  ОТЛОЖЕННОЕ БЕЗ ПОДТВЕРЖДЕНИЯ  → %d: %s') % (self._stamp(), it['to'], it['text']))
                     break
                 self.outbox_mark_sent(it)
-                self.sys('Подтверждение от ID %d получено – сообщение удалено из очереди.' % it['to'])
+                self.sys(T('Подтверждение от ID %d получено – сообщение удалено из очереди.') % it['to'])
             sent += 1
-            self.log('%s  ОТЛОЖЕННОЕ ДОСТАВЛЕНО  → %d: %s' % (self._stamp(), it['to'], it['text']))
+            self.log(T('%s  ОТЛОЖЕННОЕ ДОСТАВЛЕНО  → %d: %s') % (self._stamp(), it['to'], it['text']))
             time.sleep(gap)
         return sent
 
@@ -639,18 +667,18 @@ class Core:
             if err:
                 self.sys(err)
             items = [dict(it) for it in self.outbox if it['to'] == sender][:5]
-            self.log('%s  ЗАПРОС %s от ID %d: отложенных сообщений %d' % (
+            self.log(T('%s  ЗАПРОС %s от ID %d: отложенных сообщений %d') % (
                 self._stamp(), self.s.get('outbox_trigger', 'QRU?'), sender, len(items)))
             if items:
-                self.sys('Запрос %s от ID %d – отправляю отложенные сообщения: %d' % (
+                self.sys(T('Запрос %s от ID %d – отправляю отложенные сообщения: %d') % (
                     self.s.get('outbox_trigger', 'QRU?'), sender, len(items)))
                 self.outbox_send(items)
             elif self.s.get('outbox_reply_none'):
-                self.sys('Запрос %s от ID %d – отложенных нет, отвечаю QRU' % (
+                self.sys(T('Запрос %s от ID %d – отложенных нет, отвечаю QRU') % (
                     self.s.get('outbox_trigger', 'QRU?'), sender))
                 self.outbox_send([dict(to=sender, text='QRU', noack=True)])
             else:
-                self.sys('Запрос %s от ID %d – отложенных сообщений для него нет' % (
+                self.sys(T('Запрос %s от ID %d – отложенных сообщений для него нет') % (
                     self.s.get('outbox_trigger', 'QRU?'), sender))
         finally:
             self._qru_busy.discard(sender)
@@ -670,14 +698,14 @@ class Core:
         while self.tx_busy and time.time() - t0 < 30:
             time.sleep(0.2)
         if self.tx_busy:
-            self.sys('Сценарий пропущен: идёт передача.')
+            self.sys(T('Сценарий пропущен: идёт передача.'))
             return False
         ok = True
         for a, good, msg in self.rig.run_actions(self.rig_cfg(), actions):
             ok = ok and good
-            line = '%s: %s – %s' % (why, a, ('OK, ' + msg) if good else 'ОШИБКА: ' + msg)
-            self.sys('Трансивер  ' + line)
-            self.log('%s  ТРАНСИВЕР  %s' % (self._stamp(), line))
+            line = '%s: %s – %s' % (why, a, ('OK, ' + msg) if good else T('ОШИБКА: ') + msg)
+            self.sys(T('Трансивер  ') + line)
+            self.log(T('%s  ТРАНСИВЕР  %s') % (self._stamp(), line))
         return ok
 
     def run_scenario(self, text, sender, manual=False):
@@ -685,12 +713,12 @@ class Core:
         try:
             hit = G.match_rows(self.s['scenarios'], text, None if manual else sender)
         except G.RigError as ex:
-            self.sys('Сценарий: %s' % ex)
+            self.sys(T('Сценарий: %s') % ex)
             return str(ex)
         if not hit:
             return None
         idx, actions = hit
-        self.run_actions_logged(actions, 'сценарий %d «%s»' % (idx + 1, text))
+        self.run_actions_logged(actions, T('сценарий %d «%s»') % (idx + 1, text))
         return actions
 
     def send_ack(self, fr):
@@ -706,7 +734,7 @@ class Core:
                             amp=float(self.s['tx_level']), lead=float(self.s['ptt_delay']), tail=0.3)
         self.s['counter'] = (own + 1) & 0xFF
         self.save()
-        self.log('%s  ПОДТВЕРЖДЕНИЕ ОТПРАВЛЕНО  для ID %d, сообщение №%d' % (self._stamp(), fr['sender'], fr['counter']))
+        self.log(T('%s  ПОДТВЕРЖДЕНИЕ ОТПРАВЛЕНО  для ID %d, сообщение №%d') % (self._stamp(), fr['sender'], fr['counter']))
         self.tx_busy = True
         self.q.put(('tx_ack', fr['sender'], fr['counter'], fr['speed'], len(audio) / self.fs))
         self._tx_thread = threading.Thread(target=self._tx_run,
@@ -733,23 +761,23 @@ class Core:
     def send(self, to_id, text, force_ack=False):
         """validate and start transmission; returns error text or None"""
         if self.tx_busy:
-            return 'Передача уже идёт.'
+            return T('Передача уже идёт.')
         if self.sd is None:
-            return 'Звуковая библиотека недоступна: %s' % SD_ERROR
+            return T('Звуковая библиотека недоступна: %s') % SD_ERROR
         try:
             my = int(self.s['my_id'])
             to = int(to_id)
         except Exception:
-            return 'ID должны быть числами.'
+            return T('ID должны быть числами.')
         if not (0 <= my <= 65535) or not (0 <= to <= 65535):
-            return 'ID должен быть в диапазоне 0…65535.'
+            return T('ID должен быть в диапазоне 0…65535.')
         data = text.encode('cp1251', 'replace')
         if not (1 <= len(data) <= 252):
-            return 'Длина текста: от 1 до 252 символов (сейчас %d).' % len(data)
+            return T('Длина текста: от 1 до 252 символов (сейчас %d).') % len(data)
         speed = self.s['speed']
         f0 = float(self.s['f0'])
         if not (300 <= f0 <= 2000):
-            return 'Частота нулевого тона должна быть в диапазоне 300…2000 Гц.'
+            return T('Частота нулевого тона должна быть в диапазоне 300…2000 Гц.')
         counter = int(self.s['counter']) & 0xFF
         out = self._idx(self.s['out_dev'])
         want_ack = bool(self.s['ack']) or bool(force_ack)
@@ -768,24 +796,24 @@ class Core:
         self.q.put(('tx_start', my, to, counter, text, speed, len(audio) / self.fs))
         self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, out), daemon=True)
         self._tx_thread.start()
-        self.log('%s  ПЕРЕДАЧА  %d → %d  №%d  (%s Бод)%s: %s' % (
-            self._stamp(), my, to, counter, speed, ' [запрос подтверждения]' if want_ack else '', text))
+        self.log(T('%s  ПЕРЕДАЧА  %d → %d  №%d  (%s Бод)%s: %s') % (
+            self._stamp(), my, to, counter, speed, T(' [запрос подтверждения]') if want_ack else '', text))
         return None
 
     def send_selcall(self, to_id, message=None):
         """HF Selcall: individual call (message=None) or Message call; returns error text or None"""
         if self.tx_busy:
-            return 'Передача уже идёт.'
+            return T('Передача уже идёт.')
         if self.sd is None:
-            return 'Звуковая библиотека недоступна: %s' % SD_ERROR
+            return T('Звуковая библиотека недоступна: %s') % SD_ERROR
         err = SE.check_ids(self.s['sel_my_id'], to_id)
         if err:
             return err
         if message is not None and not message.strip():
-            return 'Введите текст сообщения (до %d символов).' % SE.MAX_MSG
+            return T('Введите текст сообщения (до %d символов).') % SE.MAX_MSG
         dots = float(self.s['sel_dot_seconds'])
         if not (0.5 <= dots <= 20):
-            return 'Длительность точек (фазирования) должна быть 0.5…20 с.'
+            return T('Длительность точек (фазирования) должна быть 0.5…20 с.')
         me, to = SE.digits(self.s['sel_my_id']), SE.digits(to_id)
         text, audio = SE.build_audio(to, me, message, self.fs, dot_seconds=dots,
                                      level=float(self.s['tx_level']), lead=float(self.s['ptt_delay']),
@@ -801,8 +829,8 @@ class Core:
         self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, self._idx(self.s['out_dev'])),
                                            daemon=True)
         self._tx_thread.start()
-        self.log('%s  SELCALL ПЕРЕДАЧА  %s %s → %s%s' % (
-            self._stamp(), 'СООБЩЕНИЕ' if text else 'ВЫЗОВ', me, to, (': ' + text) if text else ''))
+        self.log(T('%s  SELCALL ПЕРЕДАЧА  %s %s → %s%s') % (
+            self._stamp(), T('СООБЩЕНИЕ') if text else T('ВЫЗОВ'), me, to, (': ' + text) if text else ''))
         return None
 
     def ptt_cfg(self):
@@ -816,12 +844,15 @@ class Core:
 
     def ptt_apply(self):
         """open / reconfigure the PTT port; returns error text or None"""
-        return self.ptt.configure(self.ptt_cfg())
+        cfg = self.ptt_cfg()
+        if cfg['method'] != 'none' and cfg.get('port') and cfg['port'] == self.ext.port:
+            self.ext_reset()                   # PTT wins over the external device on the same port
+        return self.ptt.configure(cfg)
 
     def ptt_test(self, seconds=1.0):
         """key the transmitter for a short time (no audio!) – blocking, call from a worker thread"""
         if self.tx_busy:
-            return 'Передача уже идёт.'
+            return T('Передача уже идёт.')
         self.tx_busy = True
         try:
             err = self.ptt_apply() or self.ptt.key(True)
@@ -849,9 +880,12 @@ class Core:
         keyed = False
         try:
             if self.ptt_cfg()['method'] != 'none':
+                pp = self.s.get('ptt_port') or ''
+                if pp and self.ext.port == pp:          # the same COM port was taken by the external device
+                    self.ext_reset()
                 err = self.ptt_apply() or self.ptt.key(True)
                 if err:
-                    err = 'PTT: %s – передача отменена' % err
+                    err = T('PTT: %s – передача отменена') % err
                     return
                 keyed = True
             self.sd.play(audio, self.fs, device=out)
@@ -863,7 +897,7 @@ class Core:
                 time.sleep(0.15)
                 uerr = self.ptt.unkey_safe()
                 if uerr:
-                    err = ((err + '; ') if err else '') + 'НЕ УДАЛОСЬ СНЯТЬ PTT: %s – выключите передачу вручную!' % uerr
+                    err = ((err + '; ') if err else '') + T('НЕ УДАЛОСЬ СНЯТЬ PTT: %s – выключите передачу вручную!') % uerr
             time.sleep(0.4)
             if self.engine is not None:
                 self.engine.pause(False)
@@ -887,1315 +921,9 @@ class Core:
 
 
 # ============================================================================== GUI
-IN_CHANNELS = ['авто (где есть сигнал)', '1 (левый)', '2 (правый)']
-
-
 def run_gui():
-    import tkinter as tk
-    from tkinter import ttk, messagebox
-
-    import tkinter.font as tkfont
-    root = tk.Tk()
-    root.title('HFP+SELCALL — HFPager (PS-18) и HF Selcall (CCIR 493-4, CODAN)  v' + APP_VERSION)
-    try:            # fit small screens (e.g. 1366x768): never taller than the screen
-        _sh = int(root.winfo_screenheight())
-        root.geometry('1040x%d' % max(560, min(860, _sh - 90)))
-    except Exception:
-        root.geometry('1040x860')
-    try:
-        root.minsize(900, 520)
-    except Exception:
-        pass
-    for fname in ('TkDefaultFont', 'TkTextFont', 'TkMenuFont'):
-        try:
-            tkfont.nametofont(fname).configure(size=13 if sys.platform == 'darwin' else 11)
-        except Exception:
-            pass
-    q = queue.Queue()
-    core = Core(q)
-
-    var = dict(
-        my_id=tk.StringVar(value=str(core.s['my_id'])),
-        to_id=tk.StringVar(value=str(core.s['to_id'])),
-        in_dev=tk.StringVar(value=core.s['in_dev']),
-        out_dev=tk.StringVar(value=core.s['out_dev']),
-        speed=tk.StringVar(value=core.s['speed']),
-        f0=tk.StringVar(value=str(core.s['f0'])),
-        tx_level=tk.DoubleVar(value=core.s['tx_level']),
-        ptt_delay=tk.StringVar(value=str(core.s['ptt_delay'])),
-        afc=tk.BooleanVar(value=core.s['afc']),
-        ack=tk.BooleanVar(value=core.s['ack']),
-        auto_ack=tk.BooleanVar(value=core.s['auto_ack']),
-        only_mine=tk.BooleanVar(value=core.s['only_mine']),
-        sens_db=tk.StringVar(value=str(core.s['sens_db'])),
-        ptt_method=tk.StringVar(value=core.s['ptt_method']),
-        ptt_port=tk.StringVar(value=core.s['ptt_port']),
-        ptt_baud=tk.StringVar(value=str(core.s['ptt_baud'])),
-        ptt_invert=tk.BooleanVar(value=core.s['ptt_invert']),
-        icom_model=tk.StringVar(value=core.s['icom_model']),
-        icom_addr=tk.StringVar(value=str(core.s['icom_addr'])),
-        kenwood_variant=tk.StringVar(value=core.s['kenwood_variant']),
-        msg=tk.StringVar(),
-        status=tk.StringVar(value='Ожидание'),
-        info=tk.StringVar(value=''),
-        counter=tk.StringVar(),
-        level_txt=tk.StringVar(value='— дБ'),
-        clip=tk.StringVar(value=''),
-        # ---- HF Selcall
-        sel_enable=tk.BooleanVar(value=core.s['sel_enable']),
-        sel_my_id=tk.StringVar(value=str(core.s['sel_my_id'])),
-        sel_to_id=tk.StringVar(value=str(core.s['sel_to_id'])),
-        sel_msg=tk.StringVar(),
-        sel_dot_seconds=tk.StringVar(value=str(core.s['sel_dot_seconds'])),
-        sel_translit=tk.BooleanVar(value=core.s['sel_translit']),
-        sel_afc=tk.BooleanVar(value=core.s['sel_afc']),
-        sel_center=tk.StringVar(value='%.0f' % float(core.s['sel_center'])),
-        sel_ring=tk.BooleanVar(value=core.s['sel_ring']),
-        sel_ring_style=tk.StringVar(value=dict(SE.RING_STYLES).get(core.s['sel_ring_style'], SE.RING_STYLES[0][1])),
-        sel_ring_dev=tk.StringVar(value=core.s['sel_ring_dev'] or 'системный выход'),
-        sel_counter=tk.StringVar(),
-        sel_ring_air=tk.BooleanVar(value=core.s['sel_ring_air']),
-        sel_answer_style=tk.StringVar(value=dict(SE.RING_STYLES).get(core.s['sel_answer_style'], SE.RING_STYLES[-1][1])),
-        sel_ext_enabled=tk.BooleanVar(value=core.s['sel_ext_enabled']),
-        sel_ext_port=tk.StringVar(value=core.s['sel_ext_port']),
-        sel_ext_line=tk.StringVar(value=core.s['sel_ext_line']),
-        sel_ext_invert=tk.BooleanVar(value=core.s['sel_ext_invert']),
-        sel_ext_seconds=tk.StringVar(value='%g' % float(core.s['sel_ext_seconds'])),
-        sel_listen_after_call=tk.BooleanVar(value=core.s['sel_listen_after_call']),
-        sel_listen_seconds=tk.StringVar(value='%g' % float(core.s['sel_listen_seconds'])),
-        sel_listen_after_tx=tk.BooleanVar(value=core.s['sel_listen_after_tx']),
-        sel_listen_after_tx_seconds=tk.StringVar(value='%g' % float(core.s['sel_listen_after_tx_seconds'])),
-        in_channel=tk.StringVar(value=IN_CHANNELS[int(core.s.get('in_channel') or 0)]),
-        sel_centers=tk.StringVar(value=''),
-        sel_banner=tk.StringVar(value=''),
-    )
-
-    # ---------------------------------------------------------------- settings panel
-    top = ttk.LabelFrame(root, text='Настройки')
-    top.pack(fill='x', padx=8, pady=6)
-
-    ttk.Label(top, text='Мой ID:').grid(row=0, column=0, sticky='e', padx=4, pady=3)
-    ttk.Entry(top, textvariable=var['my_id'], width=8).grid(row=0, column=1, sticky='w')
-    ttk.Label(top, text='Вход (приём):').grid(row=0, column=2, sticky='e', padx=4)
-    in_fr = ttk.Frame(top)
-    in_fr.grid(row=0, column=3, sticky='w')
-    cb_in = ttk.Combobox(in_fr, textvariable=var['in_dev'], width=44, state='readonly')
-    cb_in.pack(side='left')
-    ttk.Label(in_fr, text='канал:').pack(side='left', padx=(8, 2))
-    cb_inch = ttk.Combobox(in_fr, textvariable=var['in_channel'], values=IN_CHANNELS, width=20, state='readonly')
-    cb_inch.pack(side='left')
-    ttk.Label(top, text='Выход (передача):').grid(row=1, column=2, sticky='e', padx=4)
-    cb_out = ttk.Combobox(top, textvariable=var['out_dev'], width=44, state='readonly')
-    cb_out.grid(row=1, column=3, sticky='w')
-
-    ttk.Label(top, text='Скорость передачи, Бод:').grid(row=1, column=0, sticky='e', padx=4, pady=3)
-    ttk.Combobox(top, textvariable=var['speed'], values=list(R.M.SPEEDS), width=7,
-                 state='readonly').grid(row=1, column=1, sticky='w')
-
-    opt = ttk.Frame(top)
-    opt.grid(row=2, column=0, columnspan=4, sticky='w', pady=3)
-    ttk.Label(opt, text='Тон 0, Гц:').pack(side='left', padx=4)
-    ttk.Entry(opt, textvariable=var['f0'], width=8).pack(side='left')
-    ttk.Label(opt, text='Уровень TX:').pack(side='left', padx=(12, 4))
-    ttk.Scale(opt, from_=0.05, to=1.0, variable=var['tx_level'], length=110).pack(side='left')
-    ttk.Label(opt, text='Задержка PTT/VOX, с:').pack(side='left', padx=(12, 4))
-    ttk.Entry(opt, textvariable=var['ptt_delay'], width=5).pack(side='left')
-    ttk.Label(opt, text='Порог приёма, дБ:').pack(side='left', padx=(12, 4))
-    ttk.Entry(opt, textvariable=var['sens_db'], width=5).pack(side='left')
-    ttk.Checkbutton(opt, text='АПЧ', variable=var['afc']).pack(side='left', padx=(12, 4))
-    ttk.Checkbutton(opt, text='Запрос подтверждения', variable=var['ack']).pack(side='left', padx=4)
-    ttk.Checkbutton(opt, text='Автоподтверждение', variable=var['auto_ack']).pack(side='left', padx=4)
-    ttk.Checkbutton(opt, text='Фильтр ID', variable=var['only_mine']).pack(
-        side='left', padx=(12, 4))
-
-    # ---------------------------------------------------------------- PTT / CAT panel
-    pf = ttk.LabelFrame(root, text='Управление передачей (PTT / CAT)')
-    pf.pack(fill='x', padx=8, pady=(0, 4))
-    pr1 = ttk.Frame(pf)
-    pr1.pack(fill='x', pady=2)
-    ttk.Label(pr1, text='Метод:').pack(side='left', padx=4)
-    cb_pm = ttk.Combobox(pr1, textvariable=var['ptt_method'], values=P.METHODS, width=11, state='readonly')
-    cb_pm.pack(side='left')
-    ttk.Label(pr1, text='COM-порт:').pack(side='left', padx=(10, 4))
-    cb_pp = ttk.Combobox(pr1, textvariable=var['ptt_port'], width=34)
-    cb_pp.pack(side='left')
-    ttk.Button(pr1, text='⟳', width=3, command=lambda: refresh_ports()).pack(side='left', padx=2)
-    ttk.Label(pr1, text='Скорость:').pack(side='left', padx=(10, 4))
-    ttk.Combobox(pr1, textvariable=var['ptt_baud'], values=[str(b) for b in P.BAUDS], width=7).pack(side='left')
-    ttk.Checkbutton(pr1, text='Инверсия (линия)', variable=var['ptt_invert']).pack(side='left', padx=8)
-    pr2 = ttk.Frame(pf)
-    pr2.pack(fill='x', pady=2)
-    ttk.Label(pr2, text='ICOM модель:').pack(side='left', padx=4)
-    cb_im = ttk.Combobox(pr2, textvariable=var['icom_model'], values=list(P.ICOM_MODELS), width=16,
-                         state='readonly')
-    cb_im.pack(side='left')
-    ttk.Label(pr2, text='CI-V адрес (hex):').pack(side='left', padx=(8, 4))
-    ttk.Entry(pr2, textvariable=var['icom_addr'], width=5).pack(side='left')
-    ttk.Label(pr2, text='KENWOOD команда:').pack(side='left', padx=(12, 4))
-    ttk.Combobox(pr2, textvariable=var['kenwood_variant'], values=P.KENWOOD_VARIANTS, width=6,
-                 state='readonly').pack(side='left')
-    btn_ptt_test = ttk.Button(pr2, text='Тест PTT (1 с, без звука)')
-    btn_ptt_test.pack(side='left', padx=14)
-    ttk.Button(pr2, text='Трансивер / сценарии…', command=lambda: open_rig_window()).pack(side='left', padx=4)
-    ttk.Button(pr2, text='Отложенные сообщения…', command=lambda: open_outbox_window()).pack(side='left', padx=4)
-    ttk.Label(pf, text='RTS/DTR: «1» на линии COM-порта на время передачи. YAESU: TX1;/TX0;  '
-                       'YAESU-OLD: 5-байтовый CAT (FT-817/857/897)  KENWOOD/ELECRAFT: TX;/RX;  '
-                       'ICOM: CI-V 1C 00. Сначала проверяйте на эквиваленте нагрузки.',
-              foreground='#777777', wraplength=900).pack(anchor='w', padx=4)
-
-    # ---------------------------------------------------------------- chat
-    mid = ttk.LabelFrame(root, text='Общий обмен сообщениями')
-    mid.pack(fill='both', expand=True, padx=8, pady=4)
-    CF = 13 if sys.platform == 'darwin' else 12            # chat font size
-    GREEN, GREEN_DIM, RED, YELLOW = '#33ff33', '#1f9e1f', '#ff4a4a', '#ffee33'
-    CYAN, CYAN_DIM = '#4fd8ff', '#2b8099'
-    chat = tk.Text(mid, wrap='word', state='disabled', font=(MONO_FONT, CF), background='#000000',
-                   foreground=GREEN, insertbackground=GREEN, selectbackground='#145214', padx=6, pady=4)
-    sb = ttk.Scrollbar(mid, command=chat.yview)
-    chat.configure(yscrollcommand=sb.set)
-    sb.pack(side='right', fill='y')
-    chat.pack(fill='both', expand=True)
-    chat.tag_configure('tome', foreground=GREEN, font=(MONO_FONT, CF, 'bold'))     # received, addressed to me
-    chat.tag_configure('rx', foreground=CYAN)                                       # received, addressed to others
-    chat.tag_configure('beacon', foreground=CYAN)
-    chat.tag_configure('dup_o', foreground=CYAN_DIM)
-    chat.tag_configure('dup', foreground=GREEN_DIM)                                 # received again
-    chat.tag_configure('mine', foreground=RED)                                      # transmitted
-    chat.tag_configure('sys', foreground=YELLOW, font=(MONO_FONT, CF - 1, 'italic'))  # everything else
-    chat.tag_configure('note', foreground=YELLOW, font=(MONO_FONT, CF, 'bold'))
-
-    def add(text, tag):
-        chat.configure(state='normal')
-        chat.insert('end', text + '\n', tag)
-        chat.configure(state='disabled')
-        chat.see('end')
-
-    def now():
-        return datetime.datetime.now().strftime('%H:%M:%S')
-
-    # ---------------------------------------------------------------- composer
-    bot = ttk.Notebook(root)
-    bot.pack(fill='x', padx=8, pady=6)
-    bot_h = ttk.Frame(bot, padding=4)
-    bot_s = ttk.Frame(bot, padding=4)
-    bot.add(bot_h, text='  HFPager: новое сообщение  ')
-    bot.add(bot_s, text='  HF Selcall (CODAN): вызов / сообщение  ')
-    ttk.Label(bot_h, text='Кому (ID):').grid(row=0, column=0, padx=4, pady=4, sticky='e')
-    ttk.Entry(bot_h, textvariable=var['to_id'], width=8).grid(row=0, column=1, sticky='w')
-    ttk.Label(bot_h, text='Текст:').grid(row=0, column=2, padx=4, sticky='e')
-    ent = ttk.Entry(bot_h, textvariable=var['msg'], width=70)
-    ent.grid(row=0, column=3, sticky='we', padx=2)
-    btn = ttk.Button(bot_h, text='Отправить')
-    btn.grid(row=0, column=4, padx=6)
-    btn_stop = ttk.Button(bot_h, text='Прервать')
-    btn_stop.grid(row=0, column=5, padx=2)
-    bot_h.columnconfigure(3, weight=1)
-    ttk.Label(bot_h, textvariable=var['counter']).grid(row=1, column=3, sticky='w')
-
-    # ---- HF Selcall tab
-    sr0 = ttk.Frame(bot_s)
-    sr0.pack(fill='x')
-    ttk.Label(sr0, text='Мой Selcall ID:').pack(side='left', padx=4, pady=4)
-    ttk.Entry(sr0, textvariable=var['sel_my_id'], width=7).pack(side='left')
-    ttk.Label(sr0, text='Кому:').pack(side='left', padx=(10, 4))
-    ttk.Entry(sr0, textvariable=var['sel_to_id'], width=7).pack(side='left')
-    ttk.Label(sr0, text='Текст:').pack(side='left', padx=(10, 4))
-    sel_ent = ttk.Entry(sr0, textvariable=var['sel_msg'], width=40)
-    sel_ent.pack(side='left', fill='x', expand=True, padx=2)
-    sel_btn_call = ttk.Button(sr0, text='Вызов')
-    sel_btn_call.pack(side='left', padx=(6, 2))
-    sel_btn_msg = ttk.Button(sr0, text='Сообщение')
-    sel_btn_msg.pack(side='left', padx=2)
-    ttk.Button(sr0, text='Прервать', command=lambda: core.abort_tx()).pack(side='left', padx=2)
-    ttk.Label(bot_s, textvariable=var['sel_counter']).pack(anchor='w', padx=4)
-    sr1 = ttk.Frame(bot_s)
-    sr1.pack(fill='x', pady=(2, 0))
-    ttk.Checkbutton(sr1, text='Приём Selcall', variable=var['sel_enable'],
-                    command=lambda: restart_rx()).pack(side='left', padx=4)
-    ttk.Label(sr1, text='Точки (фазирование), с:').pack(side='left', padx=(8, 4))
-    ttk.Entry(sr1, textvariable=var['sel_dot_seconds'], width=5).pack(side='left')
-    ttk.Checkbutton(sr1, text='Транслит', variable=var['sel_translit']).pack(side='left', padx=(10, 4))
-    ttk.Checkbutton(sr1, text='АПЧ', variable=var['sel_afc']).pack(side='left', padx=(10, 4))
-    ttk.Label(sr1, text='центр без АПЧ, Гц:').pack(side='left', padx=(2, 4))
-    ttk.Entry(sr1, textvariable=var['sel_center'], width=6).pack(side='left')
-    ttk.Label(sr1, textvariable=var['sel_centers'], foreground='#777777').pack(side='left', padx=8)
-    sr2 = ttk.Frame(bot_s)
-    sr2.pack(fill='x', pady=(2, 0))
-    ttk.Checkbutton(sr2, text='Звонок при вызове на мой ID', variable=var['sel_ring']).pack(side='left', padx=4)
-    ttk.Combobox(sr2, textvariable=var['sel_ring_style'], values=[t for _, t in SE.RING_STYLES], width=24,
-                 state='readonly').pack(side='left', padx=4)
-    ttk.Label(sr2, text='на:').pack(side='left', padx=(6, 4))
-    cb_ring = ttk.Combobox(sr2, textvariable=var['sel_ring_dev'], width=36, state='readonly')
-    cb_ring.pack(side='left')
-    ttk.Button(sr2, text='Проверить звонок', command=lambda: test_ring()).pack(side='left', padx=8)
-    sr2b = ttk.Frame(bot_s)
-    sr2b.pack(fill='x', pady=(2, 0))
-    ttk.Checkbutton(sr2b, text='Ответ в эфир (вызывающий слышит, что вызов принят; один раз, уровень TX):',
-                    variable=var['sel_ring_air']).pack(side='left', padx=4)
-    ttk.Combobox(sr2b, textvariable=var['sel_answer_style'], values=[t for _, t in SE.RING_STYLES], width=22,
-                 state='readonly').pack(side='left', padx=4)
-    ttk.Button(sr2b, text='Прослушать', command=lambda: test_answer()).pack(side='left', padx=4)
-    sr3 = ttk.Frame(bot_s)
-    sr3.pack(fill='x', pady=(2, 0))
-    ttk.Checkbutton(sr3, text='Слушать эфир после вызова на мой ID, с:',
-                    variable=var['sel_listen_after_call']).pack(side='left', padx=4)
-    ttk.Entry(sr3, textvariable=var['sel_listen_seconds'], width=5).pack(side='left')
-    ttk.Checkbutton(sr3, text='после своей передачи (ответ станции), с:',
-                    variable=var['sel_listen_after_tx']).pack(side='left', padx=(12, 4))
-    ttk.Entry(sr3, textvariable=var['sel_listen_after_tx_seconds'], width=5).pack(side='left')
-    btn_listen = ttk.Button(sr3, text='Слушать', width=12, command=lambda: core.toggle_listen())
-    btn_listen.pack(side='left', padx=10)
-    sr4 = ttk.Frame(bot_s)
-    sr4.pack(fill='x', pady=(2, 0))
-    ttk.Checkbutton(sr4, text='Внешнее устройство при вызове на мой ID (отдельный COM-порт):',
-                    variable=var['sel_ext_enabled']).pack(side='left', padx=4)
-    cb_ext = ttk.Combobox(sr4, textvariable=var['sel_ext_port'], width=12)
-    cb_ext.pack(side='left')
-    ttk.Combobox(sr4, textvariable=var['sel_ext_line'], values=SE.EXT_LINES, width=8,
-                 state='readonly').pack(side='left', padx=4)
-    ttk.Checkbutton(sr4, text='инверсия', variable=var['sel_ext_invert']).pack(side='left', padx=4)
-    ttk.Label(sr4, text='время, с (1–60):').pack(side='left', padx=(6, 2))
-    ttk.Entry(sr4, textvariable=var['sel_ext_seconds'], width=4).pack(side='left')
-    ttk.Button(sr4, text='Импульс', command=lambda: test_ext()).pack(side='left', padx=(8, 2))
-    btn_ext = ttk.Button(sr4, text='Внешн.', width=12, command=lambda: ext_toggle())
-    btn_ext.pack(side='left', padx=2)
-    ttk.Label(bot_s, text='Selcall передаётся через тот же выход, с тем же уровнем TX и тем же PTT/CAT. '
-                          'Частоты: 1700/1870 Гц (центр 1785 Гц, USB). Текст сообщения — до %d символов.'
-                          % SE.MAX_MSG, foreground='#777777', wraplength=900).pack(anchor='w', padx=4)
-
-    # ---- incoming Selcall banner (shown above the chat)
-    banner = tk.Frame(root, background='#ffd84d')
-    tk.Label(banner, textvariable=var['sel_banner'], background='#ffd84d', foreground='#000000',
-             font=('Helvetica', 14, 'bold')).pack(side='left', padx=10, pady=6)
-    banner_ui = {'call': None}
-
-    # ---------------------------------------------------------------- receive monitor
-    mon = ttk.LabelFrame(root, text='Монитор приёма')
-    mon.pack(fill='x', padx=8, pady=(0, 6))
-
-    lamp_fr = ttk.Frame(mon)
-    lamp_fr.pack(side='left', padx=10, pady=4)
-    LAMP = {'rx_on': '#33ff33', 'rx_off': '#0b3a0b', 'rx_dec': '#ffcc00', 'tx_on': '#ff2a2a', 'tx_off': '#4a0b0b'}
-
-    def make_lamp(col, label, off):
-        c = tk.Canvas(lamp_fr, width=34, height=34, highlightthickness=0)
-        c.grid(row=0, column=col, padx=6)
-        oval = c.create_oval(4, 4, 30, 30, fill=off, outline='#222222', width=2)
-        ttk.Label(lamp_fr, text=label, font=('Helvetica', 11, 'bold')).grid(row=1, column=col)
-        return c, oval
-
-    rx_lamp = make_lamp(0, 'RX', LAMP['rx_off'])
-    tx_lamp = make_lamp(1, 'TX', LAMP['tx_off'])
-    rx_state = {'state': 'idle', 'flash_until': 0.0}
-
-    def update_lamps():
-        t = time.time()
-        if rx_state['state'] == 'receiving' or t < rx_state['flash_until']:
-            colr = LAMP['rx_on']
-        elif rx_state['state'] == 'decoding':
-            colr = LAMP['rx_dec']
-        else:
-            colr = LAMP['rx_off']
-        rx_lamp[0].itemconfig(rx_lamp[1], fill=colr)
-        tx_lamp[0].itemconfig(tx_lamp[1], fill=LAMP['tx_on'] if core.tx_busy else LAMP['tx_off'])
-
-    meter = ttk.Frame(mon)
-    meter.pack(side='left', padx=10)
-    ttk.Label(meter, text='Уровень входа, дБ от полной шкалы').pack(anchor='w')
-    level = ttk.Progressbar(meter, length=210, maximum=60)
-    level.pack(anchor='w', pady=2)
-    ttk.Label(meter, textvariable=var['level_txt']).pack(anchor='w')
-    ttk.Label(meter, textvariable=var['clip'], foreground='#cc0000').pack(anchor='w')
-
-    # waterfall (spectrogram) 300..3000 Hz, newest line on top
-    WF_W, WF_H, ZOOM = 270, 56, 2
-    wf = np.full((WF_H, WF_W), -120.0, dtype=np.float32)
-    wf_state = {'lo': None, 'img': None}
-    _pos = [0.0, 0.25, 0.55, 0.8, 1.0]
-    _lut_x = np.linspace(0, 1, 256)
-    lut = np.stack([np.interp(_lut_x, _pos, c) for c in
-                    ([0, 0, 40, 255, 255], [0, 50, 230, 255, 255], [0, 0, 40, 60, 200])], axis=1).astype(np.uint8)
-    wf_box = ttk.Frame(mon)
-    wf_box.pack(side='left', padx=10, pady=4)
-    wf_canvas = tk.Canvas(wf_box, width=WF_W * ZOOM, height=WF_H * ZOOM, background='black',
-                          highlightthickness=1, highlightbackground='#333333')
-    wf_canvas.pack()
-    wf_item = wf_canvas.create_image(0, 0, anchor='nw')
-    axis = tk.Canvas(wf_box, width=WF_W * ZOOM, height=16, highlightthickness=0)
-    axis.pack()
-    for f_hz in (500, 1000, 1500, 2000, 2500, 3000):
-        x_ = (f_hz - 300) / 10 * ZOOM
-        axis.create_line(x_, 0, x_, 4)
-        axis.create_text(min(x_, WF_W * ZOOM - 14), 11, text=str(f_hz), font=('Helvetica', 8))
-    ttk.Label(wf_box, text='Спектр, Гц').pack()
-
-    def draw_waterfall():
-        lo = wf_state['lo']
-        norm = np.clip((wf - lo) / 45.0, 0.0, 1.0)
-        rgb = lut[(norm * 255).astype(np.uint8)]
-        try:
-            ppm = b'P6 %d %d 255\n' % (WF_W, WF_H) + rgb.tobytes()
-            img = tk.PhotoImage(data=ppm, format='PPM').zoom(ZOOM, ZOOM)
-        except Exception as ex:                  # old Tk (Python 3.8 / Windows 7): fall back to pixel-by-pixel put
-            if not wf_state.get('warned'):
-                wf_state['warned'] = True
-                add('[%s] • Спектр: PPM не поддерживается (%s), использую медленный режим' % (now(), ex), 'sys')
-            img = tk.PhotoImage(width=WF_W, height=WF_H)
-            img.put(' '.join('{' + ' '.join('#%02x%02x%02x' % (r_, g_, b_) for r_, g_, b_ in row) + '}'
-                             for row in rgb.tolist()))
-            img = img.zoom(ZOOM, ZOOM)
-        wf_state['img'] = img                    # keep a reference
-        wf_canvas.itemconfig(wf_item, image=img)
-
-    def on_spectrum(row):
-        row = np.asarray(row, dtype=np.float32)[:WF_W]
-        if len(row) < WF_W:
-            row = np.pad(row, (0, WF_W - len(row)), constant_values=-120.0)
-        med = float(np.median(row))
-        wf_state['lo'] = med if wf_state['lo'] is None else 0.97 * wf_state['lo'] + 0.03 * med
-        wf[1:] = wf[:-1]
-        wf[0] = row
-        draw_waterfall()
-
-    sbar = ttk.Frame(root)
-    sbar.pack(fill='x', padx=8, pady=(0, 6))
-    ttk.Label(sbar, textvariable=var['status'], width=26).pack(side='left')
-    ttk.Label(sbar, textvariable=var['info']).pack(side='left', padx=8)
-
-    # the bottom blocks (composer, receive monitor, status bar) are packed first, so they keep their space and
-    # only the chat shrinks when the window is small
-    mid.pack_forget()
-    sbar.pack_forget()
-    mon.pack_forget()
-    bot.pack_forget()
-    sbar.pack(side='bottom', fill='x', padx=8, pady=(0, 6))
-    mon.pack(side='bottom', fill='x', padx=8, pady=(0, 6))
-    bot.pack(side='bottom', fill='x', padx=8, pady=6)
-    mid.pack(side='top', fill='both', expand=True, padx=8, pady=4)
-
-    # ---------------------------------------------------------------- logic glue
-    def pull_settings():
-        try:
-            core.s['my_id'] = int(var['my_id'].get())
-        except ValueError:
-            pass
-        core.s['in_dev'] = var['in_dev'].get()
-        core.s['out_dev'] = var['out_dev'].get()
-        core.s['speed'] = var['speed'].get()
-        try:
-            core.s['f0'] = float(var['f0'].get().replace(',', '.'))
-        except ValueError:
-            pass
-        try:
-            core.s['ptt_delay'] = max(0.0, min(5.0, float(var['ptt_delay'].get().replace(',', '.'))))
-        except ValueError:
-            pass
-        try:
-            core.s['sens_db'] = max(1.0, min(20.0, float(var['sens_db'].get().replace(',', '.'))))
-        except ValueError:
-            pass
-        core.s['tx_level'] = float(var['tx_level'].get())
-        core.s['afc'] = bool(var['afc'].get())
-        core.s['ack'] = bool(var['ack'].get())
-        core.s['auto_ack'] = bool(var['auto_ack'].get())
-        core.s['only_mine'] = bool(var['only_mine'].get())
-        core.s['ptt_method'] = var['ptt_method'].get()
-        core.s['ptt_port'] = var['ptt_port'].get().split(' - ')[0].strip()
-        try:
-            core.s['ptt_baud'] = int(var['ptt_baud'].get())
-        except ValueError:
-            pass
-        core.s['ptt_invert'] = bool(var['ptt_invert'].get())
-        core.s['icom_model'] = var['icom_model'].get()
-        core.s['icom_addr'] = var['icom_addr'].get().strip() or '94'
-        core.s['kenwood_variant'] = var['kenwood_variant'].get()
-        # ---- HF Selcall
-        core.s['sel_enable'] = bool(var['sel_enable'].get())
-        core.s['sel_my_id'] = SE.digits(var['sel_my_id'].get()) or core.s['sel_my_id']
-        core.s['sel_to_id'] = SE.digits(var['sel_to_id'].get())
-        try:
-            core.s['sel_dot_seconds'] = max(0.5, min(20.0, float(var['sel_dot_seconds'].get().replace(',', '.'))))
-        except ValueError:
-            pass
-        core.s['sel_translit'] = bool(var['sel_translit'].get())
-        core.s['sel_afc'] = bool(var['sel_afc'].get())
-        try:
-            core.s['sel_center'] = max(800.0, min(2800.0, float(var['sel_center'].get().replace(',', '.'))))
-        except ValueError:
-            pass
-        core.s['sel_ring'] = bool(var['sel_ring'].get())
-        core.s['sel_ring_style'] = {t: k for k, t in SE.RING_STYLES}.get(var['sel_ring_style'].get(), 'codan')
-        rd = var['sel_ring_dev'].get()
-        core.s['sel_ring_dev'] = '' if rd == 'системный выход' else rd
-        try:
-            core.s['sel_tab'] = bot.index(bot.select())
-        except Exception:
-            pass
-        core.s['in_channel'] = IN_CHANNELS.index(var['in_channel'].get()) if var['in_channel'].get() in IN_CHANNELS else 0
-        core.s['sel_ring_air'] = bool(var['sel_ring_air'].get())
-        core.s['sel_answer_style'] = {t: k for k, t in SE.RING_STYLES}.get(var['sel_answer_style'].get(), 'kalinka')
-
-        def num(name, lo, hi, dflt):
-            try:
-                return max(lo, min(hi, float(var[name].get().replace(',', '.'))))
-            except ValueError:
-                return dflt
-        old = (core.s.get('sel_ext_port'), core.s.get('sel_ext_line'), core.s.get('sel_ext_invert'))
-        core.s['sel_ext_enabled'] = bool(var['sel_ext_enabled'].get())
-        core.s['sel_ext_port'] = var['sel_ext_port'].get().split(' - ')[0].strip()
-        core.s['sel_ext_line'] = var['sel_ext_line'].get() if var['sel_ext_line'].get() in SE.EXT_LINES else 'DTR'
-        core.s['sel_ext_invert'] = bool(var['sel_ext_invert'].get())
-        core.s['sel_ext_seconds'] = num('sel_ext_seconds', 1, 60, 5.0)
-        core.s['sel_listen_after_call'] = bool(var['sel_listen_after_call'].get())
-        core.s['sel_listen_seconds'] = num('sel_listen_seconds', 5, 600, 60.0)
-        core.s['sel_listen_after_tx'] = bool(var['sel_listen_after_tx'].get())
-        core.s['sel_listen_after_tx_seconds'] = num('sel_listen_after_tx_seconds', 5, 600, 60.0)
-        if old != (core.s['sel_ext_port'], core.s['sel_ext_line'], core.s['sel_ext_invert']):
-            core.ext.close(old[1] or 'RTS+DTR', bool(old[2]))
-            core.ext_manual = False
-
-    def refresh_ports():
-        ports = P.list_ports()
-        cb_pp['values'] = [lbl for _, lbl in ports]
-        cb_ext['values'] = [dv for dv, _ in ports]
-        cur = var['ptt_port'].get().split(' - ')[0].strip()
-        if not cur and ports:
-            var['ptt_port'].set(ports[0][1])
-
-    def on_ptt_method(*_):
-        m = var['ptt_method'].get()
-        var['ptt_baud'].set(str(P.DEFAULT_BAUD.get(m, 9600)))
-
-    def on_icom_model(*_):
-        a = P.ICOM_MODELS.get(var['icom_model'].get())
-        if a is not None:
-            var['icom_addr'].set('%02X' % a)
-
-    def ptt_test():
-        pull_settings()
-        core.save()
-        if core.s['ptt_method'] == 'none':
-            messagebox.showinfo('PTT', 'Метод PTT = none: управлять нечем.')
-            return
-        if not messagebox.askokcancel('Тест PTT', 'Трансивер включится на передачу примерно на 1 секунду '
-                                      '(звука не будет). Нагрузка подключена, диапазон свободен?'):
-            return
-        btn_ptt_test.state(['disabled'])
-
-        def work():
-            err = core.ptt_test(1.0)
-            q.put(('ptt_test', err))
-        threading.Thread(target=work, daemon=True).start()
-
-    def refresh_devices():
-        ins, outs = core.devices()
-        cb_in['values'] = [l for _, l in ins]
-        cb_out['values'] = [l for _, l in outs]
-        cb_ring['values'] = ['системный выход'] + [l for _, l in outs]
-        if not var['in_dev'].get() and ins:
-            var['in_dev'].set(ins[0][1])
-        if not var['out_dev'].get() and outs:
-            var['out_dev'].set(outs[0][1])
-
-    def restart_rx(*_):
-        pull_settings()
-        core.save()
-        core.start_rx()
-
-    def on_send(*_):
-        pull_settings()
-        text = var['msg'].get().strip()
-        err = core.send(var['to_id'].get(), text)
-        if err:
-            messagebox.showwarning('Отправка', err)
-        else:
-            var['msg'].set('')
-        update_counter()
-
-    def update_counter(*_):
-        data = var['msg'].get().encode('cp1251', 'replace')
-        n = len(data)
-        t = Core.air_time(var['speed'].get(), max(n, 1))
-        var['counter'].set('%d/252 байт, время в эфире ≈ %.0f с, сообщение № %d' %
-                           (n, t, int(core.s['counter']) & 0xFF))
-
-    # ---------------------------------------------------------------- HF Selcall glue
-    def sel_send(with_text):
-        pull_settings()
-        text = var['sel_msg'].get().strip() if with_text else None
-        err = core.send_selcall(var['sel_to_id'].get(), text)
-        if err:
-            messagebox.showwarning('HF Selcall', err)
-        elif with_text:
-            var['sel_msg'].set('')
-
-    def sel_update_counter(*_):
-        txt = var['sel_msg'].get()
-        tr = SE.prepare_text(txt, bool(var['sel_translit'].get())) or ''
-        try:
-            dots = float(var['sel_dot_seconds'].get().replace(',', '.'))
-        except ValueError:
-            dots = 6.0
-        t_call = SE.air_time(dots, var['sel_my_id'].get(), var['sel_to_id'].get(), None)
-        t_msg = SE.air_time(dots, var['sel_my_id'].get(), var['sel_to_id'].get(), txt or 'X',
-                            bool(var['sel_translit'].get()))
-        over = len(SE.translit(txt) if var['sel_translit'].get() else txt) > SE.MAX_MSG
-        var['sel_counter'].set('%d/%d символов%s%s.  Время в эфире: вызов ≈ %.1f с, сообщение ≈ %.1f с' % (
-            len(tr), SE.MAX_MSG, ' (лишнее будет обрезано)' if over else '',
-            ('  → «%s»' % tr) if (tr and tr != txt.strip()) else '', t_call, t_msg))
-
-    def sel_show_banner(c, title):
-        banner_ui['call'] = c
-        txt = '☎  %s от %s' % (title, c['from'])
-        if c['message']:
-            txt += ':  ' + c['message']
-        var['sel_banner'].set(txt)
-        if not banner.winfo_ismapped():
-            for w_ in banner.winfo_children():
-                if isinstance(w_, ttk.Button):
-                    w_.destroy()
-            ttk.Button(banner, text='Сбросить', command=sel_dismiss).pack(side='right', padx=6, pady=4)
-            ttk.Button(banner, text='Ответить', command=sel_answer).pack(side='right', padx=6, pady=4)
-            banner.pack(side='top', fill='x', padx=8, pady=(4, 0), before=mid)
-        try:
-            root.deiconify()
-            root.lift()
-            if sys.platform.startswith('win'):
-                import ctypes
-                ctypes.windll.user32.FlashWindow(int(root.wm_frame(), 16), True)
-        except Exception:
-            pass
-        if core.s.get('sel_ring'):
-            err = core.ring()
-            if err:
-                add('[%s] • Звонок: %s' % (now(), err), 'sys')
-        if core.s.get('sel_ext_enabled') and core.s.get('sel_ext_port'):
-            core.ext_pulse()
-        if core.s.get('sel_listen_after_call', True):
-            if core.s.get('sel_ring_air'):
-                core.listen_pending = float(core.s.get('sel_listen_seconds') or 60)   # after the answer on air
-            else:
-                core.start_listen()
-        if core.s.get('sel_ring_air'):
-            frm = c['from']
-
-            def air():          # a short pause: the calling station has time to switch to receive
-                err = core.send_answer(frm)
-                if err:
-                    core.listen_pending = None
-                    add('[%s] • %s' % (now(), err), 'sys')
-                    if core.s.get('sel_listen_after_call', True):
-                        core.start_listen()
-            root.after(1000, air)
-
-    def sel_dismiss():
-        core.ringer.stop()
-        banner_ui['call'] = None
-        banner.pack_forget()
-
-    def sel_answer():
-        c = banner_ui['call']
-        if c:
-            var['sel_to_id'].set(c['from'])
-            bot.select(bot_s)
-            sel_ent.focus_set()
-        sel_dismiss()
-
-    def test_answer():
-        pull_settings()
-        core.save()
-        err = core.ring(answer=True)
-        if err:
-            messagebox.showwarning('Сигнал ответа', err)
-
-    def test_ext():
-        pull_settings()
-        core.save()
-        if not core.s.get('sel_ext_port'):
-            messagebox.showwarning('Внешнее устройство', 'Укажите COM-порт внешнего устройства.')
-            return
-        core.ext_pulse()
-
-    def ext_toggle():
-        pull_settings()
-        core.save()
-        if not core.s.get('sel_ext_port'):
-            messagebox.showwarning('Внешнее устройство', 'Укажите COM-порт внешнего устройства.')
-            return
-        core.ext_toggle()
-
-    def update_sel_buttons():
-        if core.listener.active:
-            btn_listen.configure(text='Слушаю ■' if core.listen_manual else 'Слушаю…')
-        else:
-            btn_listen.configure(text='Слушать')
-        btn_ext.configure(text='Внешн. ВКЛ' if core.ext.on else 'Внешн.')
-
-    def test_ring():
-        pull_settings()
-        core.save()
-        if core.ringer.active:
-            core.ringer.stop()
-            return
-        dev = core._idx(core.s['sel_ring_dev']) if core.s['sel_ring_dev'] else None
-        err = core.ringer.start(dev, core.s['sel_ring_style'], core.s['sel_ring_volume'], 3.0)
-        if err:
-            messagebox.showwarning('Звонок', err)
-
-    # ---------------------------------------------------------------- transceiver panel + scenarios
-    rig_ui = {}
-
-    def open_rig_window():
-        w0 = rig_ui.get('win')
-        if w0 is not None:
-            try:
-                w0.deiconify()
-                w0.lift()
-                return
-            except Exception:
-                rig_ui.clear()
-        w = tk.Toplevel(root)
-        w.title('Трансивер (CAT) и сценарии')
-        rig_ui['win'] = w
-        rv = dict(
-            proto=tk.StringVar(value=core.s['rig_proto']), port=tk.StringVar(value=core.s['rig_port']),
-            baud=tk.StringVar(value=str(core.s['rig_baud'])), enable=tk.BooleanVar(value=core.s['rig_scen_enable']),
-            freq=tk.StringVar(value='7.100'), mode=tk.StringVar(value='USB'), cur=tk.StringVar(value='—'),
-            on=tk.BooleanVar(value=True), trig=tk.StringVar(), frm=tk.StringVar(), act=tk.StringVar(),
-            test=tk.StringVar(), status=tk.StringVar(value=''))
-        rig_ui['cur'] = rv['cur']
-        rig_ui['status'] = rv['status']
-
-        def sync(save=True):
-            pull_settings()
-            core.s['rig_proto'] = rv['proto'].get()
-            core.s['rig_port'] = rv['port'].get().split(' - ')[0].strip()
-            try:
-                core.s['rig_baud'] = int(rv['baud'].get())
-            except ValueError:
-                pass
-            core.s['rig_scen_enable'] = bool(rv['enable'].get())
-            if save:
-                core.save()
-
-        def bg(fn):
-            sync()
-            threading.Thread(target=fn, daemon=True).start()
-
-        def run_text(text):
-            bg(lambda: core.run_actions_logged(text, 'панель'))
-
-        # --- connection
-        cf = ttk.LabelFrame(w, text='Связь с трансивером (CAT)')
-        cf.pack(fill='x', padx=8, pady=6)
-        ttk.Label(cf, text='Протокол:').pack(side='left', padx=4)
-        ttk.Combobox(cf, textvariable=rv['proto'], values=G.RIG_PROTOS, width=11, state='readonly').pack(side='left')
-        ttk.Label(cf, text='COM-порт:').pack(side='left', padx=(10, 4))
-        cb_rp = ttk.Combobox(cf, textvariable=rv['port'], values=[l for _, l in P.list_ports()], width=30)
-        cb_rp.pack(side='left')
-        ttk.Label(cf, text='Скорость:').pack(side='left', padx=(10, 4))
-        ttk.Combobox(cf, textvariable=rv['baud'], values=[str(b) for b in P.BAUDS], width=7).pack(side='left')
-
-        def same_as_ptt():
-            pull_settings()
-            m = core.s['ptt_method']
-            if m in G.RIG_PROTOS:
-                rv['proto'].set(m)
-            rv['port'].set(core.s['ptt_port'])
-            rv['baud'].set(str(core.s['ptt_baud']))
-        ttk.Button(cf, text='Как в PTT', command=same_as_ptt).pack(side='left', padx=8)
-        ttk.Label(cf, text='(CI-V адрес ICOM — в панели PTT)', foreground='#777777').pack(side='left')
-
-        # --- panel
-        pnl = ttk.LabelFrame(w, text='Управление')
-        pnl.pack(fill='x', padx=8, pady=4)
-        r1 = ttk.Frame(pnl)
-        r1.pack(fill='x', pady=3)
-        ttk.Label(r1, text='Частота, МГц:').pack(side='left', padx=4)
-        ttk.Entry(r1, textvariable=rv['freq'], width=11).pack(side='left')
-        ttk.Label(r1, text='Режим:').pack(side='left', padx=(10, 4))
-        ttk.Combobox(r1, textvariable=rv['mode'], values=G.MODES, width=7, state='readonly').pack(side='left')
-        ttk.Button(r1, text='Установить', command=lambda: run_text('FRQ %s %s' % (
-            rv['freq'].get().strip() or '0', rv['mode'].get()))).pack(side='left', padx=6)
-        ttk.Button(r1, text='Только режим', command=lambda: run_text('MODE %s' % rv['mode'].get())).pack(
-            side='left')
-
-        def read_now():
-            def work():
-                try:
-                    hz = core.rig.read_freq(core.rig_cfg())
-                    q.put(('rig_freq', '%s МГц' % G.fmt_mhz(hz)))
-                except G.RigError as ex:
-                    q.put(('rig_freq', 'ошибка: %s' % ex))
-            bg(work)
-        ttk.Button(r1, text='Прочитать частоту', command=read_now).pack(side='left', padx=10)
-        ttk.Label(r1, textvariable=rv['cur'], font=(MONO_FONT, CF, 'bold')).pack(side='left', padx=4)
-        r2 = ttk.Frame(pnl)
-        r2.pack(fill='x', pady=3)
-        ttk.Label(r2, text='Диапазон, м:').pack(side='left', padx=4)
-        for b in G.BANDS:
-            ttk.Button(r2, text=str(b), width=4, command=lambda b=b: run_text('BND %d' % b)).pack(side='left')
-        r3 = ttk.Frame(pnl)
-        r3.pack(fill='x', pady=3)
-        ttk.Label(r3, text='Шаг, кГц:').pack(side='left', padx=4)
-        for lbl, act in (('−10', 'DOWN 10'), ('−1', 'DOWN 1'), ('−0.1', 'DOWN 0.1'),
-                         ('+0.1', 'UP 0.1'), ('+1', 'UP 1'), ('+10', 'UP 10')):
-            ttk.Button(r3, text=lbl, width=5, command=lambda a=act: run_text(a)).pack(side='left')
-
-        # --- scenarios
-        sf = ttk.LabelFrame(w, text='Сценарии: действия при получении сообщения')
-        sf.pack(fill='both', expand=True, padx=8, pady=4)
-        ttk.Checkbutton(sf, text='Выполнять сценарии при получении сообщений, адресованных моему ID',
-                        variable=rv['enable'], command=lambda: sync()).pack(anchor='w', padx=4, pady=2)
-        tv = ttk.Treeview(sf, columns=('n', 'on', 'trigger', 'from', 'action'), show='headings', height=9)
-        for c, t, wd in (('n', '№', 32), ('on', 'Вкл', 40), ('trigger', 'Текст сообщения (* = любое слово)', 230),
-                         ('from', 'От ID (пусто = любой)', 130), ('action', 'Действие', 330)):
-            tv.heading(c, text=t)
-            tv.column(c, width=wd, anchor='w')
-        tv.pack(fill='both', expand=True, padx=4, pady=2)
-
-        def fill_table(sel=None):
-            for i in tv.get_children():
-                tv.delete(i)
-            for n, r in enumerate(core.s['scenarios']):
-                tv.insert('', 'end', iid=str(n), values=(n + 1, '✔' if r.get('on', True) else '',
-                                                         r.get('trigger', ''), r.get('from', ''),
-                                                         r.get('action', '')))
-            if sel is not None and str(sel) in tv.get_children():
-                tv.selection_set(str(sel))
-
-        def selected():
-            sel = tv.selection()
-            return int(sel[0]) if sel else None
-
-        def on_select(*_):
-            n = selected()
-            if n is None or n >= len(core.s['scenarios']):
-                return
-            r = core.s['scenarios'][n]
-            rv['on'].set(bool(r.get('on', True)))
-            rv['trig'].set(r.get('trigger', ''))
-            rv['frm'].set(str(r.get('from', '')))
-            rv['act'].set(r.get('action', ''))
-
-        def row_from_form():
-            return {'on': bool(rv['on'].get()), 'trigger': rv['trig'].get().strip().upper(),
-                    'from': rv['frm'].get().strip(), 'action': rv['act'].get().strip()}
-
-        def valid(row):
-            if not row['trigger'] or not row['action']:
-                messagebox.showwarning('Сценарий', 'Заполните текст сообщения и действие.')
-                return False
-            return True
-
-        def add_row():
-            r = row_from_form()
-            if valid(r):
-                core.s['scenarios'].append(r)
-                core.save()
-                fill_table(len(core.s['scenarios']) - 1)
-
-        def replace_row():
-            n, r = selected(), row_from_form()
-            if n is None:
-                messagebox.showinfo('Сценарий', 'Выберите строку таблицы.')
-            elif valid(r):
-                core.s['scenarios'][n] = r
-                core.save()
-                fill_table(n)
-
-        def delete_row():
-            n = selected()
-            if n is not None:
-                del core.s['scenarios'][n]
-                core.save()
-                fill_table()
-
-        def move_row(d):
-            n = selected()
-            if n is None or not (0 <= n + d < len(core.s['scenarios'])):
-                return
-            sc = core.s['scenarios']
-            sc[n], sc[n + d] = sc[n + d], sc[n]
-            core.save()
-            fill_table(n + d)
-
-        def defaults_rows():
-            if messagebox.askokcancel('Сценарии', 'Заменить таблицу стандартным набором сценариев?'):
-                core.s['scenarios'] = copy.deepcopy(G.DEFAULT_SCENARIOS)
-                core.save()
-                fill_table()
-
-        tv.bind('<<TreeviewSelect>>', on_select)
-        ef = ttk.Frame(sf)
-        ef.pack(fill='x', pady=2)
-        ttk.Checkbutton(ef, text='Вкл', variable=rv['on']).pack(side='left', padx=4)
-        ttk.Label(ef, text='Сообщение:').pack(side='left')
-        ttk.Entry(ef, textvariable=rv['trig'], width=24).pack(side='left', padx=2)
-        ttk.Label(ef, text='От ID:').pack(side='left', padx=(6, 0))
-        ttk.Entry(ef, textvariable=rv['frm'], width=10).pack(side='left', padx=2)
-        ttk.Label(ef, text='Действие:').pack(side='left', padx=(6, 0))
-        ttk.Entry(ef, textvariable=rv['act'], width=34).pack(side='left', padx=2)
-        bf = ttk.Frame(sf)
-        bf.pack(fill='x', pady=2)
-        for t, c in (('Добавить', add_row), ('Заменить', replace_row), ('Удалить', delete_row),
-                     ('▲', lambda: move_row(-1)), ('▼', lambda: move_row(1)), ('Стандартные', defaults_rows)):
-            ttk.Button(bf, text=t, command=c, width=11 if len(t) > 2 else 4).pack(side='left', padx=3)
-        tf = ttk.Frame(sf)
-        tf.pack(fill='x', pady=3)
-        ttk.Label(tf, text='Проверка (имитация сообщения):').pack(side='left', padx=4)
-        ttk.Entry(tf, textvariable=rv['test'], width=28).pack(side='left')
-
-        def test_msg():
-            text = rv['test'].get().strip()
-
-            def work():
-                res = core.run_scenario(text, None, manual=True)
-                q.put(('rig_status', 'нет подходящего сценария' if res is None else 'выполнено: ' + res))
-            bg(work)
-        ttk.Button(tf, text='Выполнить', command=test_msg).pack(side='left', padx=6)
-        ttk.Label(tf, textvariable=rv['status'], foreground='#777777').pack(side='left', padx=4)
-        ttk.Label(sf, text='Действия (через «;»): BND <м> · FRQ <МГц> [режим] · MODE <режим> · UP/DOWN <кГц> · '
-                           'WAIT <с>.  Параметры из сообщения: {1}, {2}…  Режимы: ' + ' '.join(G.MODES) +
-                           '.  Передатчик сценарии не включают. Выполняется только первый подходящий сценарий '
-                           '(порядок сверху вниз); для защиты укажите «От ID».',
-                  foreground='#777777', wraplength=820).pack(anchor='w', padx=4, pady=2)
-        fill_table()
-
-        def close_win():
-            sync()
-            rig_ui.clear()
-            w.destroy()
-        w.protocol('WM_DELETE_WINDOW', close_win)
-
-    # ---------------------------------------------------------------- deferred messages window
-    ob_ui = {}
-
-    def open_outbox_window():
-        w0 = ob_ui.get('win')
-        if w0 is not None:
-            try:
-                w0.deiconify()
-                w0.lift()
-                return
-            except Exception:
-                ob_ui.clear()
-        w = tk.Toplevel(root)
-        w.title('Отложенные сообщения')
-        try:
-            w.transient(root)
-        except Exception:
-            pass
-        ob_ui['win'] = w
-        ov = dict(enable=tk.BooleanVar(value=core.s['outbox_enable']),
-                  reply=tk.BooleanVar(value=core.s['outbox_reply_none']),
-                  trig=tk.StringVar(value=core.s['outbox_trigger']),
-                  tmo=tk.StringVar(value=str(core.s['outbox_ack_timeout'])),
-                  file=tk.StringVar(value=core.s['outbox_file'] or core.outbox_path()),
-                  to=tk.StringVar(value=''), text=tk.StringVar(value=''), info=tk.StringVar(value=''))
-
-        def sync():
-            core.s['outbox_enable'] = bool(ov['enable'].get())
-            core.s['outbox_reply_none'] = bool(ov['reply'].get())
-            core.s['outbox_trigger'] = ov['trig'].get().strip() or 'QRU?'
-            try:
-                core.s['outbox_ack_timeout'] = max(10.0, min(600.0, float(ov['tmo'].get().replace(',', '.'))))
-            except ValueError:
-                pass
-            path = ov['file'].get().strip()
-            changed = path != core.outbox_path()
-            core.s['outbox_file'] = '' if path == OUTBOX_DEFAULT else path
-            core.save()
-            return changed
-
-        top2 = ttk.LabelFrame(w, text='Режим «QRU?»')
-        top2.pack(fill='x', padx=8, pady=6)
-        ttk.Checkbutton(top2, text='При получении запроса от ID отправлять ему его отложенные сообщения',
-                        variable=ov['enable'], command=sync).pack(anchor='w', padx=4)
-        r1 = ttk.Frame(top2)
-        r1.pack(fill='x', pady=2)
-        ttk.Label(r1, text='Текст запроса:').pack(side='left', padx=4)
-        ttk.Entry(r1, textvariable=ov['trig'], width=10).pack(side='left')
-        ttk.Label(r1, text='Ждать подтверждение, с:').pack(side='left', padx=(12, 4))
-        ttk.Entry(r1, textvariable=ov['tmo'], width=5).pack(side='left')
-        ttk.Checkbutton(r1, text='Если для него ничего нет — отвечать «QRU»', variable=ov['reply'],
-                        command=sync).pack(side='left', padx=12)
-        r2 = ttk.Frame(top2)
-        r2.pack(fill='x', pady=2)
-        ttk.Label(r2, text='TXT-файл:').pack(side='left', padx=4)
-        ttk.Entry(r2, textvariable=ov['file'], width=62).pack(side='left')
-
-        tv = ttk.Treeview(w, columns=('n', 'to', 'text'), show='headings', height=10)
-        for c, t, wd in (('n', '№', 36), ('to', 'Кому (ID)', 90), ('text', 'Текст сообщения', 620)):
-            tv.heading(c, text=t)
-            tv.column(c, width=wd, anchor='w')
-        tv.pack(fill='both', expand=True, padx=8, pady=4)
-
-        def fill(sel=None):
-            for i in tv.get_children():
-                tv.delete(i)
-            for n, it in enumerate(core.outbox):
-                tv.insert('', 'end', iid=str(n), values=(n + 1, it['to'], it['text']))
-            if sel is not None and str(sel) in tv.get_children():
-                tv.selection_set(str(sel))
-            ov['info'].set('Сообщений в очереди: %d' % len(core.outbox))
-
-        def selected():
-            sel = tv.selection()
-            return int(sel[0]) if sel else None
-
-        def on_select(*_):
-            n = selected()
-            if n is not None and n < len(core.outbox):
-                ov['to'].set(str(core.outbox[n]['to']))
-                ov['text'].set(core.outbox[n]['text'])
-
-        def read_form():
-            to, text = ov['to'].get().strip(), ov['text'].get().strip()
-            if not (to.isdigit() and 0 <= int(to) <= 65535):
-                messagebox.showwarning('Отложенные', 'ID получателя: число 0…65535.')
-                return None
-            n = len(text.encode('cp1251', 'replace'))
-            if not (1 <= n <= 252):
-                messagebox.showwarning('Отложенные', 'Длина текста: 1…252 байта (сейчас %d).' % n)
-                return None
-            return dict(to=int(to), text=text.replace('\n', ' '))
-
-        def save_back():
-            err = core.outbox_save()
-            if err:
-                messagebox.showwarning('Отложенные', err)
-
-        def add_item():
-            it = read_form()
-            if it:
-                core.outbox_load()
-                core.outbox.append(it)
-                save_back()
-                fill(len(core.outbox) - 1)
-
-        def replace_item():
-            n, it = selected(), read_form()
-            if n is None:
-                messagebox.showinfo('Отложенные', 'Выберите строку.')
-            elif it:
-                core.outbox[n] = it
-                save_back()
-                fill(n)
-
-        def delete_item():
-            n = selected()
-            if n is not None:
-                del core.outbox[n]
-                save_back()
-                fill()
-
-        def send_now():
-            n = selected()
-            if n is None:
-                messagebox.showinfo('Отложенные', 'Выберите строку.')
-                return
-            it = dict(core.outbox[n])
-            threading.Thread(target=lambda: core.outbox_send([it], first_delay=0.0), daemon=True).start()
-
-        def reload_file():
-            sync()
-            err = core.outbox_load()
-            fill()
-            if err:
-                messagebox.showwarning('Отложенные', err)
-
-        def open_file():
-            sync()
-            if not os.path.exists(core.outbox_path()):
-                save_back()
-            try:
-                if sys.platform.startswith('win'):
-                    os.startfile(core.outbox_path())
-                else:
-                    import subprocess
-                    subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', core.outbox_path()])
-            except Exception as ex:
-                messagebox.showwarning('Отложенные', 'Не удалось открыть файл: %s' % ex)
-
-        tv.bind('<<TreeviewSelect>>', on_select)
-        ef = ttk.Frame(w)
-        ef.pack(fill='x', padx=8, pady=2)
-        ttk.Label(ef, text='Кому (ID):').pack(side='left')
-        e_to = ttk.Entry(ef, textvariable=ov['to'], width=8)
-        e_to.pack(side='left', padx=3)
-        ttk.Label(ef, text='Текст:').pack(side='left', padx=(8, 0))
-        e_text = ttk.Entry(ef, textvariable=ov['text'], width=60)
-        e_text.pack(side='left', padx=3)
-        for e_ in (e_to, e_text):       # click always gives the field the keyboard focus (Windows quirk)
-            e_.bind('<Button-1>', lambda ev: (ev.widget.focus_force(), None)[1])
-        bf = ttk.Frame(w)
-        bf.pack(fill='x', padx=8, pady=2)
-        for t, c in (('Добавить', add_item), ('Заменить', replace_item), ('Удалить', delete_item),
-                     ('Отправить сейчас', send_now), ('Перечитать файл', reload_file), ('Открыть TXT', open_file)):
-            ttk.Button(bf, text=t, command=c).pack(side='left', padx=3)
-        ttk.Label(w, textvariable=ov['info'], foreground='#777777').pack(anchor='w', padx=10)
-        ttk.Label(w, text='Формат файла (UTF-8): одна строка = одно сообщение,  ID|текст  — например  10048|Привет, жду на 7.185.  '
-                          'Сообщение удаляется из очереди только после получения подтверждения доставки (отправляется с запросом подтверждения); без подтверждения остаётся. Строки с # игнорируются. Приложение само перечитывает файл при изменении, так что '
-                          'сообщения можно добавлять из другого менеджера. Отправленные строки удаляются из файла '
-                          'и дописываются в outbox_sent.txt (дата время|ID|текст).',
-                  foreground='#777777', wraplength=780).pack(anchor='w', padx=10, pady=(0, 6))
-
-        core.outbox_load()
-        fill()
-        ob_ui['fill'] = fill
-
-        def watch():
-            if ob_ui.get('win') is None:
-                return
-            try:
-                if core.outbox_changed_on_disk():
-                    core.outbox_load()
-                    fill()
-                root.after(3000, watch)
-            except Exception:
-                pass
-        root.after(3000, watch)
-
-        def close():
-            sync()
-            ob_ui.clear()
-            w.destroy()
-        w.protocol('WM_DELETE_WINDOW', close)
-
-    btn.configure(command=on_send)
-    sel_btn_call.configure(command=lambda: sel_send(False))
-    sel_btn_msg.configure(command=lambda: sel_send(True))
-    sel_ent.bind('<Return>', lambda *_: sel_send(True))
-    for k_ in ('sel_msg', 'sel_translit', 'sel_dot_seconds', 'sel_my_id', 'sel_to_id'):
-        var[k_].trace_add('write', sel_update_counter)
-    try:
-        bot.select(int(core.s.get('sel_tab', 0)))
-    except Exception:
-        pass
-    btn_ptt_test.configure(command=ptt_test)
-    cb_pm.bind('<<ComboboxSelected>>', on_ptt_method)
-    cb_im.bind('<<ComboboxSelected>>', on_icom_model)
-    btn_stop.configure(command=core.abort_tx)
-    ent.bind('<Return>', on_send)
-    var['msg'].trace_add('write', update_counter)
-    var['speed'].trace_add('write', update_counter)
-    for k in ('in_dev',):
-        cb_in.bind('<<ComboboxSelected>>', restart_rx)
-    cb_inch.bind('<<ComboboxSelected>>', lambda *_: (pull_settings(), core.save()))
-    ttk.Button(top, text='Журнал (TXT)', command=lambda: (lambda e: e and messagebox.showwarning(
-        'Журнал', e))(core.open_log())).grid(row=2, column=4, padx=6)
-    ttk.Button(top, text='Обновить', command=lambda: (refresh_devices(), restart_rx())).grid(
-        row=0, column=4, padx=6)
-    ttk.Button(top, text='Применить', command=lambda: (pull_settings(), core.save(),
-                                                       core.apply_live_settings())).grid(row=1, column=4, padx=6)
-
-    clip_until = [0.0]
-
-    def handle(item):
-        kind = item[0]
-        if kind == 'sys':
-            add('[%s] • %s' % (now(), item[1]), 'sys')
-        elif kind == 'rx':
-            _, fr, info, dup = item
-            mine = int(core.s['my_id'])
-            text = fr['text'].decode('cp1251', 'replace')
-            hide = bool(core.s.get('only_mine')) and (fr['b0'] == 0x06 or fr['dest'] != mine)
-            if hide:
-                pass
-            elif fr['b0'] == 0x06:
-                add('[%s] ★ Маяк от %d: %s  (%s Бод)' % (now(), fr['sender'], text, fr['speed']), 'beacon')
-            else:
-                tome = fr['dest'] == mine
-                tag = ('dup' if tome else 'dup_o') if dup else ('tome' if tome else 'rx')
-                line = '[%s] %d → %d  №%d  (%s Бод, АПЧ %.0f Гц): %s%s' % (
-                    now(), fr['sender'], fr['dest'], fr['counter'], fr['speed'],
-                    info.get('afc_hz', 0.0), text, '   (повтор)' if dup else '')
-                add(line, tag)
-                if (fr['b1'] & 0x02) and fr['dest'] == mine and not dup:
-                    add('      запрошено подтверждение доставки%s' % (
-                        ' – отправляю' if core.s.get('auto_ack') else
-                        ' (автоподтверждение выключено)'), 'sys')
-            var['info'].set('Последний кадр: центр %.0f Гц, диапазон АПЧ %.1f Гц' %
-                            (info.get('center_hz', 0), info.get('afc_hz', 0)))
-            rx_state['flash_until'] = time.time() + 1.5
-            update_lamps()
-        elif kind == 'ack':
-            _, fr, info, hit = item
-            who = 'ПОДТВЕРЖДЕНИЕ' if fr['kind'] == 'ack' else 'ОТКАЗ'
-            if core.s.get('only_mine') and not hit and fr['dest'] != int(core.s['my_id']):
-                pass
-            elif hit:
-                add('[%s] ✔ %s: сообщение №%d для %d доставлено («%s»)' % (
-                    now(), who, fr['orig_counter'], hit[0], hit[1]), 'note')
-            else:
-                add('[%s] ✔ %s для ID %d (исходное сообщение №%d, CRC %04X)' % (
-                    now(), who, fr['dest'], fr['orig_counter'], fr['orig_crc']), 'note')
-        elif kind == 'outbox_changed':
-            if ob_ui.get('fill') is not None:
-                core.outbox_load()
-                ob_ui['fill']()
-        elif kind == 'rig_freq':
-            if rig_ui.get('cur') is not None:
-                rig_ui['cur'].set(item[1])
-        elif kind == 'rig_status':
-            if rig_ui.get('status') is not None:
-                rig_ui['status'].set(item[1])
-        elif kind == 'ptt_test':
-            btn_ptt_test.state(['!disabled'])
-            add('[%s] • Тест PTT: %s' % (now(), item[1] or 'выполнен (включено и выключено)'), 'sys')
-        elif kind == 'tx_ack':
-            _, to, cnt, speed, secs = item
-            add('[%s] ✔ → %d  подтверждение сообщения №%d  (%s Бод, ≈ %.0f с)' % (now(), to, cnt, speed, secs), 'mine')
-            var['status'].set('Передача…')
-            btn.state(['disabled'])
-            sel_btn_call.state(['disabled'])
-            sel_btn_msg.state(['disabled'])
-            update_lamps()
-        elif kind == 'sel_rx':
-            _, c, when, mine, own = item
-            if core.s.get('only_mine') and not mine:
-                return
-            if c['eos'] == 'ACK-BQ':
-                title = 'Подтверждение'
-            elif c['message']:
-                title = 'Сообщение'
-            else:
-                title = 'Вызов'
-            stamp = datetime.datetime.fromtimestamp(when).strftime('%H:%M:%S')
-            line = '[%s] SELCALL %s %s → %s%s' % (stamp, title.upper(), c['from'], c['to'],
-                                                  (': ' + c['message']) if c['message'] else '')
-            line += '   (%.0f Гц%s%s)' % (c['center_hz'], ', LSB' if c['polarity'] == 'inverted' else '',
-                                          '' if c['ecc_ok'] else ', СОМНИТЕЛЬНО')
-            if own:
-                add(line + '  [своя передача]', 'dup_o')
-            else:
-                add(line, ('tome' if mine else 'rx') if c['ecc_ok'] else 'dup_o')
-            rx_state['flash_until'] = time.time() + 1.5
-            update_lamps()
-            if mine and not own and c['ecc_ok'] and c['eos'] != 'ACK-BQ':
-                sel_show_banner(c, title)
-        elif kind == 'sel_event':
-            _, ev, info = item
-            if ev == 'centers':
-                var['sel_centers'].set(('Selcall АПЧ: ' + ', '.join('%.0f' % f for f in info[:3]) + ' Гц')
-                                       if (info and core.s.get('sel_afc')) else '')
-            elif ev == 'error':
-                add('[%s] • %s' % (now(), info['text']), 'sys')
-        elif kind == 'sel_answer_start':
-            _, to, secs = item
-            add('[%s] SELCALL ОТВЕТ В ЭФИР → %s   (≈ %.1f с)' % (now(), to, secs), 'mine')
-            var['status'].set('Ответ в эфир…')
-            btn.state(['disabled'])
-            sel_btn_call.state(['disabled'])
-            sel_btn_msg.state(['disabled'])
-            update_lamps()
-        elif kind in ('listen_state', 'ext_state'):
-            update_sel_buttons()
-        elif kind == 'rx_restart':
-            if core.stream is not None and not core.tx_busy:
-                ok_ = core.start_rx()
-                add('[%s] • Вход не отдаёт звук %.0f с — приём %s' % (now(), item[1], 'перезапущен' if ok_ else
-                                                                     'перезапустить не удалось'), 'sys')
-        elif kind == 'sel_tx_start':
-            _, me, to, text, secs = item
-            add('[%s] SELCALL %s %s → %s%s   (передача ≈ %.0f с)' % (
-                now(), 'СООБЩЕНИЕ' if text else 'ВЫЗОВ', me, to, (': ' + text) if text else '', secs), 'mine')
-            var['status'].set('Передача Selcall…')
-            btn.state(['disabled'])
-            sel_btn_call.state(['disabled'])
-            sel_btn_msg.state(['disabled'])
-            update_lamps()
-        elif kind == 'tx_start':
-            _, my, to, cnt, text, speed, secs = item
-            add('[%s] %d → %d  №%d  (%s Бод, передача ≈ %.0f с): %s' % (now(), my, to, cnt, speed, secs, text),
-                'mine')
-            var['status'].set('Передача…')
-            btn.state(['disabled'])
-            sel_btn_call.state(['disabled'])
-            sel_btn_msg.state(['disabled'])
-            update_lamps()
-        elif kind == 'tx_done':
-            btn.state(['!disabled'])
-            sel_btn_call.state(['!disabled'])
-            sel_btn_msg.state(['!disabled'])
-            var['status'].set('Ожидание')
-            update_lamps()
-            if item[1]:
-                add('[%s] • Ошибка передачи: %s' % (now(), item[1]), 'sys')
-        elif kind == 'event':
-            _, ev, info = item
-            if ev == 'level':
-                db = info.get('rms_db', -60.0)
-                level['value'] = max(0.0, min(60.0, db + 60.0))
-                var['level_txt'].set('%.0f дБ' % db)
-                if info.get('clip'):
-                    var['clip'].set('ПЕРЕГРУЗКА ВХОДА — уменьшите уровень!')
-                    clip_until[0] = time.time() + 1.5
-                elif time.time() > clip_until[0]:
-                    var['clip'].set('')
-            elif ev == 'spectrum':
-                on_spectrum(info['db'])
-            elif ev == 'state' and not core.tx_busy:
-                rx_state['state'] = info['state']
-                var['status'].set({'idle': 'Ожидание', 'receiving': 'Приём сигнала…',
-                                   'decoding': 'Декодирование…'}.get(info['state'], ''))
-                update_lamps()
-            elif ev == 'fail':
-                # a Selcall (FSK) signal also wakes the HFPager detector: do not report it as a failed frame
-                def report(info=info, t_fail=time.time()):
-                    if core.last_sel_rx < t_fail - info['seconds'] - 3:
-                        add('[%s] • Принят сигнал (%.0f с), но кадр HFPager не удалось декодировать '
-                            '(слишком слабый или искажён)' % (now(), info['seconds']), 'sys')
-                root.after(3500, report)
-            elif ev == 'error':
-                add('[%s] • Внутренняя ошибка: %s' % (now(), info['text']), 'sys')
-
-    def poll():
-        try:
-            while True:
-                try:
-                    handle(q.get_nowait())
-                except queue.Empty:
-                    raise
-                except Exception as ex:             # a failing handler must never stop the UI loop
-                    import traceback
-                    core.log('%s  ОШИБКА ИНТЕРФЕЙСА: %s' % (core._stamp(), traceback.format_exc().replace('\n', ' | ')))
-                    add('[%s] • Ошибка интерфейса: %s' % (now(), ex), 'sys')
-        except queue.Empty:
-            pass
-        try:
-            update_lamps()
-        except Exception:
-            pass
-        root.after(100, poll)
-
-    def on_close():
-        try:
-            pull_settings()
-            core.save()
-            core.stop_rx()
-            core.ringer.stop()
-            core.listener.stop()
-            core.ext_reset()
-            core.ptt.close()
-            core.rig.close()
-        finally:
-            root.destroy()
-
-    root.protocol('WM_DELETE_WINDOW', on_close)
-    refresh_devices()
-    refresh_ports()
-    update_counter()
-    sel_update_counter()
-    if sd is None:
-        add('• Библиотека sounddevice/PortAudio недоступна: %s' % SD_ERROR, 'sys')
-        add('• Установите: pip install sounddevice numpy', 'sys')
-    else:
-        add('• Передача и приём идут через выбранные звуковые устройства.', 'sys')
-        restart_rx()
-    poll()
-    root.mainloop()
+    import hfp_selcall_gui
+    hfp_selcall_gui.run()
 
 
 if __name__ == '__main__':
