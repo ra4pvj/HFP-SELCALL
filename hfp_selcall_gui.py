@@ -918,7 +918,7 @@ class App:
         ttk.Checkbutton(r, text=T('Отвечать мелодией в эфир на сообщение'), variable=self.var['bcn_req_enable']
                         ).pack(side='left', padx=4)
         ttk.Entry(r, textvariable=self.var['bcn_req_text'], width=10).pack(side='left')
-        ttk.Label(r, text=T('(на мой ID или всем, ID 0):')).pack(side='left', padx=4)
+        ttk.Label(r, text=T('(только на мой ID):')).pack(side='left', padx=4)
         ttk.Combobox(r, textvariable=self.var['bcn_req_style'], values=styles, width=22,
                      state='readonly').pack(side='left', padx=4)
         b = ttk.Frame(f)

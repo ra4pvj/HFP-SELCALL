@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta3'
+APP_VERSION = '0.3.0-beta4'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -82,7 +82,7 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 call_text='CALL', hfp_ring=True, hfp_ring_style='codan', hfp_ring_seconds=30.0,
                 hfp_msg_sound=True, hfp_msg_style='beep', hfp_ring_air=True, hfp_answer_style='kalinka',
                 hfp_listen_after_call=True, hfp_listen_seconds=60.0, hfp_ext_enabled=False,
-                # answer with a melody on air to the message "BCN REQ" addressed to me (or to everybody, ID 0)
+                # answer with a melody on air to the message "BCN REQ" addressed to my ID (not to ID 0)
                 bcn_req_enable=True, bcn_req_text='BCN REQ', bcn_req_style='kalinka',
                 # message / call macros: 10 buttons under the chat
                 macros=None,
@@ -588,7 +588,7 @@ class Core:
             self.q.put(('hfp_call' if is_call else 'hfp_msg_to_me', fr))
         bq = ' '.join(str(self.s.get('bcn_req_text') or 'BCN REQ').upper().split())
         if (self.s.get('bcn_req_enable') and fr.get('kind') == 'msg' and not dup and text_n == bq
-                and fr['dest'] in (int(self.s['my_id']), 0)):
+                and fr['dest'] == int(self.s['my_id'])):
             snd = fr['sender']
             self.sys(T('Запрос %s от ID %d — отвечаю мелодией в эфир') % (bq, snd))
             self.after_tx(lambda: self._answer_or_log(snd, self.s.get('bcn_req_style', 'kalinka'), 'HFPager ' + bq),

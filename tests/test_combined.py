@@ -280,7 +280,10 @@ def test_stage2(tmp):
     print('OK  HFPager: «CALL» to my ID → call event; other text → incoming-message event')
 
     core.s.update(bcn_req_enable=True, bcn_req_style='kalinka')
-    core._on_frame(dict(fr, counter=3, text=b'BCN  req', dest=0), {})
+    core._on_frame(dict(fr, counter=3, text=b'BCN REQ', dest=0), {})        # to all: ignored
+    time.sleep(3.0)
+    assert not FakeSD.played and not core.tx_busy, 'BCN REQ to ID 0 must not be answered'
+    core._on_frame(dict(fr, counter=4, text=b'BCN  req'), {})                  # to my ID
     t0 = time.time()
     while not FakeSD.played and time.time() - t0 < 6:
         time.sleep(0.1)
@@ -290,7 +293,7 @@ def test_stage2(tmp):
     audio, fs = FakeSD.played[-1]
     want = 16 * SE.KALINKA_QUARTER + core.s['ptt_delay'] + 0.3
     assert abs(len(audio) / fs - want) < 0.03, len(audio) / fs
-    print('OK  BCN REQ (to ID 0) → melody on air, %.2f s' % (len(audio) / fs))
+    print('OK  BCN REQ to my ID → melody on air, %.2f s; to ID 0 → ignored' % (len(audio) / fs))
 
     ran = []
     core.run_actions_logged = lambda actions, why: ran.append(actions) or True

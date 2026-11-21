@@ -717,4 +717,6 @@ EN = {
         'Selcall: message',
     'CW (телеграф)':
         'CW (Morse)',
+    '(только на мой ID):':
+        '(to my ID only):',
 }
