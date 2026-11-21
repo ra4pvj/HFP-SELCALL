@@ -803,8 +803,8 @@ EN = {
         'Scanning stopped, transceiver returned to %s MHz',
     'Сканирование остановлено; вернуть частоту не удалось: %s':
         'Scanning stopped; could not restore the frequency: %s',
-    'В скане':
-        'In scan',
+    'Скан':
+        'Scan',
     'Канал':
         'Channel',
     'Подпись кнопки канала %d (%s %s):':
@@ -813,4 +813,6 @@ EN = {
         'Channel %d has no frequency (channel table on the «Transceiver & audio» tab).',
     'канал %d «%s»':
         'channel %d «%s»',
+    'Декодеры':
+        'Decoders',
 }

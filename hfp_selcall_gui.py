@@ -601,6 +601,18 @@ class App:
         self.lut = np.stack([np.interp(_lx, _pos, c) for c in
                              ([0, 0, 40, 255, 255], [0, 50, 230, 255, 255], [0, 0, 40, 60, 200])],
                             axis=1).astype(np.uint8)
+        dec = ttk.Frame(mon)
+        dec.pack(side='right', padx=(8, 0))
+        ttk.Label(dec, text=T('Декодеры')).pack(anchor='w')
+        self.tb_hfp = ttk.Checkbutton(dec, text='HFPager', style='Toolbutton', variable=self.var['hfp_enable'],
+                                      command=self.toggle_hfp, width=13)
+        self.tb_hfp.pack(fill='x', pady=(2, 2))
+        self.tb_sel = ttk.Checkbutton(dec, text='Selcall', style='Toolbutton', variable=self.var['sel_enable'],
+                                      command=self.toggle_sel, width=13)
+        self.tb_sel.pack(fill='x', pady=(2, 0))
+        self.update_decoder_buttons()
+        clk = ttk.Frame(mon)
+        clk.pack(side='right', padx=(10, 0))
         wf_box = ttk.Frame(mon)
         wf_box.pack(side='left', padx=8)
         self.wf_canvas = tk.Canvas(wf_box, width=WF_W * ZOOM, height=WF_H * ZOOM, background='black',
@@ -616,8 +628,6 @@ class App:
             axis.create_text(min(xx, WF_W * ZOOM - 14), 10, text=str(f_hz), font=('Helvetica', 8),
                              fill=self.colors()['dim'])
 
-        clk = ttk.Frame(mon)
-        clk.pack(side='left', padx=(10, 0))
         self.clock_utc = SegClock(tk, clk, 'UTC')
         self.clock_utc.c.pack(pady=(0, 4))
         self.clock_loc = SegClock(tk, clk, tz_time(self.core.s.get('clock_tz', 'MSK'))[0])
@@ -706,25 +716,20 @@ class App:
         self.build_compose(f)
         bar = ttk.Frame(f)
         bar.pack(side='bottom', fill='x', pady=(2, 2))
-        # decoders on/off and the scan mode: pressed = on
-        self.tb_hfp = ttk.Checkbutton(bar, text='HFPager', style='Toolbutton', variable=self.var['hfp_enable'],
-                                      command=self.toggle_hfp, width=12)
-        self.tb_hfp.pack(side='left', padx=(0, 4))
-        self.tb_sel = ttk.Checkbutton(bar, text='Selcall', style='Toolbutton', variable=self.var['sel_enable'],
-                                      command=self.toggle_sel, width=12)
-        self.tb_sel.pack(side='left', padx=4)
-        self.update_decoder_buttons()
-        # channel row: SCAN + 6 channel buttons (captions from the channel table; right click renames)
+        # channel row: SCAN + 6 channel buttons (captions from the channel table; right click renames).
+        # A grid of equal columns: the buttons share the window width, so all 6 stay visible in a narrow window
         crow = ttk.Frame(f)
         crow.pack(side='bottom', fill='x', pady=(4, 0))
         self.tb_scan = ttk.Checkbutton(crow, text=T('СКАН'), style='Toolbutton', variable=self.var['scan_btn'],
-                                       command=self.toggle_scan, width=10)
-        self.tb_scan.pack(side='left', padx=(0, 8))
+                                       command=self.toggle_scan, width=1)
+        self.tb_scan.grid(row=0, column=0, sticky='ew', padx=(0, 8))
+        crow.columnconfigure(0, weight=1, uniform='ch', minsize=60)
         self.chan_btns = []
         for i in range(A.SCAN_CHANNELS):
             b = ttk.Radiobutton(crow, text=str(i + 1), style='Toolbutton', variable=self.var['chan_sel'], value=i,
-                                command=lambda i_=i: self.on_channel(i_), width=10)
-            b.pack(side='left', padx=2)
+                                command=lambda i_=i: self.on_channel(i_), width=1)
+            b.grid(row=0, column=i + 1, sticky='ew', padx=2)
+            crow.columnconfigure(i + 1, weight=1, uniform='ch', minsize=60)
             for ev in ('<Button-3>',) + (('<Button-2>', '<Control-Button-1>') if sys.platform == 'darwin' else ()):
                 b.bind(ev, lambda e, i_=i: self.rename_channel(i_))
             self.chan_btns.append(b)
@@ -1173,7 +1178,7 @@ class App:
         sf.pack(fill='x', pady=(8, 0))
         grid = ttk.Frame(sf)
         grid.pack(fill='x')
-        for col, (t, w) in enumerate(((T('№'), 3), (T('Подпись кнопки'), 14), (T('В скане'), 7),
+        for col, (t, w) in enumerate(((T('№'), 3), (T('Подпись кнопки'), 14), (T('Скан'), 7),
                                       (T('Частота, МГц'), 12), (T('Режим'), 9), (T('Задержка на канале, с'), 18))):
             ttk.Label(grid, text=t, width=w).grid(row=0, column=col, sticky='w', padx=2)
         self.scan_vars = []
