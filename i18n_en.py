@@ -837,4 +837,6 @@ EN = {
         'While scanning, the beacon always goes out on one channel: when it is due, the scanner goes there, sends the beacon, waits the set time of silence and goes on scanning. If the scanner is holding on a channel because of reception, the beacon waits for the contact to end.',
     'Передача: %s — повторяю':
         'Transmission: %s — retrying',
+    'Запрос %s от ID %d с запросом подтверждения — отвечаю подтверждением':
+        '%s request from ID %d with an acknowledgement request — answering with the acknowledgement',
 }

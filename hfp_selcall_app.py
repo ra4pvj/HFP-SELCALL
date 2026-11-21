@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta20'
+APP_VERSION = '0.3.0-beta21'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -668,24 +668,31 @@ class Core:
         if (self.s.get('rig_scen_enable') and to_me and not dup):
             threading.Thread(target=self.run_scenario,
                              args=(fr['text'].decode('cp1251', 'replace'), fr['sender']), daemon=True).start()
-        if to_me and not dup:
-            is_call = text_n == ' '.join(str(self.s.get('call_text') or 'CALL').upper().split())
-            self.q.put(('hfp_call' if is_call else 'hfp_msg_to_me', fr))
+        is_call = to_me and text_n == ' '.join(str(self.s.get('call_text') or 'CALL').upper().split())
         bq = ' '.join(str(self.s.get('bcn_req_text') or 'BCN REQ').upper().split())
-        if (self.s.get('bcn_req_enable') and fr.get('kind') == 'msg' and not dup and text_n == bq
-                and fr['dest'] == int(self.s['my_id'])):
+        # beacon request: a link check without the operator — never a ring or a sound here; with an ACK request
+        # it is answered by the ACK alone, without one by the melody on air
+        is_bq = to_me and bool(self.s.get('bcn_req_enable')) and text_n == bq
+        want_ack = bool(fr['b1'] & 0x02) if fr.get('kind') == 'msg' else False
+        if to_me and not dup and not is_bq:
+            self.q.put(('hfp_call' if is_call else 'hfp_msg_to_me', fr))
+        if is_bq and not dup:
             snd = fr['sender']
-            self.sys(T('Запрос %s от ID %d — отвечаю мелодией в эфир') % (bq, snd))
-            self.after_tx(lambda: self._answer_or_log(snd, self.s.get('bcn_req_style', 'kalinka'), 'HFPager ' + bq),
-                          delay=1.5)
+            if want_ack:
+                self.sys(T('Запрос %s от ID %d с запросом подтверждения — отвечаю подтверждением') % (bq, snd))
+            else:
+                self.sys(T('Запрос %s от ID %d — отвечаю мелодией в эфир') % (bq, snd))
+                self.after_tx(lambda: self._answer_or_log(snd, self.s.get('bcn_req_style', 'kalinka'),
+                                                          'HFPager ' + bq), delay=1.5)
         if (self.s.get('outbox_enable') and fr.get('kind') == 'msg' and fr['dest'] == int(self.s['my_id'])
                 and not dup and ' '.join(fr['text'].decode('cp1251', 'replace').upper().split())
                 == ' '.join(str(self.s.get('outbox_trigger', 'QRU?')).upper().split())):
             threading.Thread(target=self.on_qru, args=(fr['sender'],), daemon=True).start()
         # auto-ACK also for a repeat: the sender repeats because it did not hear our ACK; the same frame decoded
         # twice at once (both input channels / both decoders) is confirmed only once
-        if (self.s.get('auto_ack') and fr.get('kind') == 'msg' and (fr['b1'] & 0x02)
-                and fr['dest'] == int(self.s['my_id'])):
+        # CALL is answered only by the melody on air, never by an ACK; a beacon request with an ACK request is
+        # confirmed even when auto-ACK is off (that ACK is its answer)
+        if (to_me and want_ack and not is_call and (self.s.get('auto_ack') or is_bq)):
             akey = (fr['sender'], fr['counter'], fr['hdr_crc'])
             if now - self._acked.get(akey, 0) > ACK_REPEAT_GAP:
                 self._acked[akey] = now

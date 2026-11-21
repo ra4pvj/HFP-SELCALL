@@ -572,9 +572,33 @@ def test_auto_ack(tmp):
             time.sleep(0.1)
         core._tx_thread.join(30)
         assert len(FakeSD.played) == 2, len(FakeSD.played)
+        # BCN REQ with an ACK request: the ACK only (even with auto-ACK off), no melody, no ring / sound here
+        def run(f, wait=4.0):
+            core._acked.clear()
+            core._seen.clear()
+            FakeSD.played.clear()
+            drain(q, 0.1)
+            core._on_frame(f, {})
+            ev = drain(q, wait)
+            if core._tx_thread is not None:
+                core._tx_thread.join(30)
+            return [e[0] for e in ev]
+        core.s.update(auto_ack=False, bcn_req_enable=True, bcn_req_text='BCN REQ', hfp_ring_air=False)
+        ev = run(dict(fr, text=b'BCN REQ', b1=fr['b1'] | 0x02))
+        assert 'tx_ack' in ev and len(FakeSD.played) == 1, (ev, len(FakeSD.played))
+        assert 'hfp_msg_to_me' not in ev and 'hfp_call' not in ev, ev
+        # BCN REQ without an ACK request: the melody on air, no ACK, no ring / sound here
+        core.s['auto_ack'] = True
+        ev = run(dict(fr, text=b'BCN REQ', b1=fr['b1'] & ~0x02))
+        assert 'tx_ack' not in ev and len(FakeSD.played) == 1, (ev, len(FakeSD.played))
+        assert 'hfp_msg_to_me' not in ev and 'hfp_call' not in ev, ev
+        # CALL with an ACK request: no ACK (only the call / melody on air)
+        ev = run(dict(fr, text=b'CALL', b1=fr['b1'] | 0x02))
+        assert 'tx_ack' not in ev and 'hfp_call' in ev and not FakeSD.played, (ev, len(FakeSD.played))
     finally:
         A.ACK_REPEAT_GAP = old_gap
         core.stop_rx()
+    print('OK  BCN REQ: with an ACK request -> ACK only, without -> melody, never a ring here; CALL -> no ACK')
     print('OK  auto-ACK: standard preamble (%.1f s), waits for our TX, once per frame, again for a repeat' % ack_len)
 
 

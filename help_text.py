@@ -40,11 +40,11 @@ HF Selcall: «Кому (Selcall ID)»; «Вызов» — вызов без те
 В списках COM-портов есть пункт «Выключено» — порт не используется. Если на компьютере один COM-порт, он не может одновременно быть портом PTT/CAT и портом внешнего устройства; при совпадении приоритет у PTT.
 
 ## Вызов HFPager и звонок
-Кнопка «Вызов» в поле HFPager сразу отправляет на ID «Кому» сообщение CALL (текст вызова меняется на вкладке «HFPager»). Когда такое сообщение приходит на ваш ID, появляется жёлтая панель «☎ HFPager Вызов от …», звучит звонок, включается внешнее устройство (если отмечено), в эфир уходит ответ мелодией (после автоподтверждения, если оно включено), затем включается прослушивание эфира — всё как у Selcall, настройки на вкладке «HFPager».
+Кнопка «Вызов» в поле HFPager сразу отправляет на ID «Кому» сообщение CALL (текст вызова меняется на вкладке «HFPager»). Когда такое сообщение приходит на ваш ID, появляется жёлтая панель «☎ HFPager Вызов от …», звучит звонок, включается внешнее устройство (если отмечено), в эфир уходит ответ мелодией (подтверждение приёма на CALL не передаётся, даже если отправитель его запросил), затем включается прослушивание эфира — всё как у Selcall, настройки на вкладке «HFPager».
 Обычное сообщение на ваш ID сопровождается коротким «звуком входящего сообщения» (мелодия выбирается).
 
 ## Ответ на BCN REQ
-Если на ваш ID пришло сообщение «BCN REQ», программа отвечает мелодией в эфир. Запрос, адресованный всем (ID 0), не обрабатывается — иначе ответили бы сразу все станции. Текст запроса и мелодия — на вкладке «HFPager». Это автоматическая передача.
+Если на ваш ID пришло сообщение «BCN REQ», программа отвечает в эфир без участия оператора: если отправитель запросил подтверждение — только подтверждением приёма (даже при выключенном автоподтверждении), если не запросил — мелодией. Звонка, звука и панели вызова у вас при этом нет: это проверка связи, не привлекающая внимания оператора. Запрос, адресованный всем (ID 0), не обрабатывается — иначе ответили бы сразу все станции. Текст запроса и мелодия — на вкладке «HFPager». Это автоматическая передача.
 
 ## Макросы
 Вкладка «Маяк и макросы»: 10 макросов — подпись кнопки, что делать (сообщение или вызов HFPager, вызов или сообщение Selcall), кому (пусто — из поля под чатом), текст и «Сразу». Кнопки с подписями видны над полями ввода под чатом. Без «Сразу» макрос только заполняет поля.
@@ -124,11 +124,11 @@ On the "Transceiver & audio" tab you can set frequency and mode, choose a band a
 COM port lists contain "Off" — the port is not used. With a single COM port it cannot be both the PTT/CAT port and the external-device port; if they are the same, PTT wins.
 
 ## HFPager call and ring
-The «Call» button in the HFPager field sends the message CALL to the «To» ID at once (the call text is set on the «HFPager» tab). When such a message arrives for your ID, a yellow bar «☎ HFPager Call from …» appears, the ring sounds, the external device switches on (if ticked), the answer melody goes on air (after the auto-confirmation, if that is on), then listening starts — all like Selcall; the settings are on the «HFPager» tab.
+The «Call» button in the HFPager field sends the message CALL to the «To» ID at once (the call text is set on the «HFPager» tab). When such a message arrives for your ID, a yellow bar «☎ HFPager Call from …» appears, the ring sounds, the external device switches on (if ticked), the answer melody goes on air (no acknowledgement is sent for CALL, even if the sender asked for one), then listening starts — all like Selcall; the settings are on the «HFPager» tab.
 An ordinary message to your ID plays a short «incoming message sound» (selectable).
 
 ## Answer to BCN REQ
-When the message «BCN REQ» arrives for your ID, the program answers with a melody on air. A request to all (ID 0) is ignored — otherwise every station would answer at once. The request text and the melody are on the «HFPager» tab. This is an automatic transmission.
+When the message «BCN REQ» arrives for your ID, the program answers on air without the operator: with the acknowledgement alone if the sender asked for one (even with auto-acknowledgement off), otherwise with the melody. No ring, sound or call bar here: it is a link check that does not draw the operator's attention. A request to all (ID 0) is ignored — otherwise every station would answer at once. The request text and the melody are on the «HFPager» tab. This is an automatic transmission.
 
 ## Macros
 «Beacon & macros» tab: 10 macros — button caption, what to do (HFPager message or call, Selcall call or message), to (empty = from the field under the chat), text and «At once». Buttons with captions appear above the input fields under the chat. Without «At once» a macro only fills the fields.
