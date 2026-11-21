@@ -560,15 +560,15 @@ class App:
     # ------------------------------------------------------------------ monitor strip (always visible)
     def build_monitor(self):
         tk, ttk = self.tk, self.ttk
-        # one group centred in the window, equal gaps between its parts:
-        # lamps · level meter · spectrum · clocks · decoder buttons
+        # five parts spread over the whole width with equal gaps and the same margin at both edges:
+        # lamps | level meter | spectrum | clocks | decoder buttons  (grid: equal-weight spacer columns between)
+        EDGE = 12
         bar = ttk.Frame(self.root)
-        bar.pack(side='top', fill='x', pady=(8, 2))
-        mon = ttk.Frame(bar)
-        mon.pack(side='top')                  # packed without fill: centred, free space split left / right
-        GAP = 10
-        lamp_fr = ttk.Frame(mon)
-        lamp_fr.pack(side='left', padx=GAP)
+        bar.pack(side='top', fill='x', padx=EDGE, pady=(8, 2))
+        for col in (1, 3, 5, 7):
+            bar.columnconfigure(col, weight=1, uniform='gap', minsize=8)
+        lamp_fr = ttk.Frame(bar)
+        lamp_fr.grid(row=0, column=0, sticky='w')
 
         def make_lamp(col, label, off):
             c = tk.Canvas(lamp_fr, width=34, height=34, highlightthickness=0,
@@ -580,8 +580,8 @@ class App:
         self.rx_lamp = make_lamp(0, 'RX', LAMP['rx_off'])
         self.tx_lamp = make_lamp(1, 'TX', LAMP['tx_off'])
 
-        meter = ttk.Frame(mon)
-        meter.pack(side='left', padx=GAP)
+        meter = ttk.Frame(bar)
+        meter.grid(row=0, column=2)
         ttk.Label(meter, text=T('Уровень входа (пик), dBFS')).pack(anchor='w')
         self.meter = tk.Canvas(meter, width=METER_W, height=METER_H + 12, highlightthickness=0,
                                background=self.colors()['bg'] or self.root_bg_default)
@@ -602,7 +602,7 @@ class App:
         ttk.Label(row, textvariable=self.var['clip'], foreground='#e02020').pack(side='left')
 
         # spectrum (waterfall) 300..3000 Hz, newest line on top: 270 bins of 10 Hz drawn WF_W pixels wide
-        WF_W, WF_H, ZOOM = 360, 50, 2
+        WF_W, WF_H, ZOOM = 540, 50, 2
         self.WF = (WF_W, WF_H, ZOOM)
         if self.wf is None or self.wf.shape != (WF_H, WF_W):
             self.wf = np.full((WF_H, WF_W), -120.0, dtype=np.float32)
@@ -611,8 +611,8 @@ class App:
         self.lut = np.stack([np.interp(_lx, _pos, c) for c in
                              ([0, 0, 40, 255, 255], [0, 50, 230, 255, 255], [0, 0, 40, 60, 200])],
                             axis=1).astype(np.uint8)
-        wf_box = ttk.Frame(mon)
-        wf_box.pack(side='left', padx=GAP)
+        wf_box = ttk.Frame(bar)
+        wf_box.grid(row=0, column=4)
         self.wf_canvas = tk.Canvas(wf_box, width=WF_W, height=WF_H * ZOOM, background='black',
                                    highlightthickness=1, highlightbackground='#333333')
         self.wf_canvas.pack()
@@ -625,10 +625,10 @@ class App:
             axis.create_line(xx, 0, xx, 4, fill=self.colors()['dim'])
             axis.create_text(min(xx, WF_W - 14), 10, text=str(f_hz), font=('Helvetica', 8),
                              fill=self.colors()['dim'])
-        clk = ttk.Frame(mon)
-        clk.pack(side='left', padx=GAP)
-        dec = ttk.Frame(mon)
-        dec.pack(side='left', padx=GAP)
+        clk = ttk.Frame(bar)
+        clk.grid(row=0, column=6)
+        dec = ttk.Frame(bar)
+        dec.grid(row=0, column=8, sticky='e')
         self.tb_hfp = ttk.Checkbutton(dec, text='HFPager', style='Toolbutton', variable=self.var['hfp_enable'],
                                       command=self.toggle_hfp, width=13)
         self.tb_hfp.pack(fill='x', pady=(0, 6))
@@ -2575,7 +2575,7 @@ def run():
     try:
         sh = int(root.winfo_screenheight())
         sw = int(root.winfo_screenwidth())
-        root.geometry(geo if geo else '%dx%d' % (max(800, min(1160, sw - 40)), max(560, min(820, sh - 90))))
+        root.geometry(geo if geo else '%dx%d' % (max(800, min(1300, sw - 40)), max(560, min(820, sh - 90))))
         root.minsize(640, 420)
     except Exception:
         pass
