@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta21'
+APP_VERSION = '0.3.0-beta22'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -172,6 +172,8 @@ class Core:
         m = self.s.get('macros')
         if not isinstance(m, list) or len(m) != 10:
             self.s['macros'] = default_macros()
+        # the dark theme was dropped (hard to read): always the light one
+        self.s['theme'] = 'light'
         # both decoders are on at every start, whatever they were when the program was closed
         self.s['hfp_enable'] = True
         self.s['sel_enable'] = True

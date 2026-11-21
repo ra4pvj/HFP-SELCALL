@@ -75,7 +75,7 @@ HF Selcall: «Кому (Selcall ID)»; «Вызов» — вызов без те
 Во всех полях ввода и в чате работают Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A (на macOS — Cmd), в том числе при русской раскладке, и меню по правой кнопке мыши.
 
 ## Программа
-Вкладка «Программа» и меню «Вид»: язык (русский / English), тема (светлая / тёмная), часовой пояс вторых часов, папка журнала и отложенных сообщений. Все сообщения записываются в текстовый журнал messages.txt (меню «Файл → Открыть журнал»).
+Вкладка «Программа» и меню «Вид»: язык (русский / English), часовой пояс вторых часов, папка журнала и отложенных сообщений. Все сообщения записываются в текстовый журнал messages.txt (меню «Файл → Открыть журнал»).
 
 ## Если что-то не работает
 • Нет приёма: проверьте вход и канал, уровень (индикатор должен двигаться), выключите перегрузку.
@@ -159,7 +159,7 @@ Menu "File → Deferred messages". Messages for stations that are not listening 
 Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A (Cmd on macOS) work in all input fields and in the chat, also with a non-Latin keyboard layout, and there is a right-click menu.
 
 ## Program
-"Program" tab and the "View" menu: language (Русский / English), theme (light / dark), time zone of the second clock, folder of the journal and deferred messages. All messages are written to the text journal messages.txt (menu "File → Open journal").
+"Program" tab and the "View" menu: language (Русский / English), time zone of the second clock, folder of the journal and deferred messages. All messages are written to the text journal messages.txt (menu "File → Open journal").
 
 ## Troubleshooting
 • No reception: check the input and channel, the level (the meter must move), avoid overload.

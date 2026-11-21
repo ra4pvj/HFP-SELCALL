@@ -271,7 +271,17 @@ def main():
     app.open_help()
     app.about()
 
-    # language and theme: the window is rebuilt, the chat survives
+    # own IDs in the right corners of the HFPager / Selcall fields follow the settings
+    app.var['my_id'].set('4321')
+    app.var['sel_my_id'].set('2468')
+    assert app.own_id_vars['my_id'].get() == 'Мой ID: 4321' and app.own_id_vars['sel_my_id'].get() == 'Мой Selcall ID: 2468'
+    # the dark theme is gone: a saved 'dark' loads as light
+    core.s['theme'] = 'dark'
+    core.save()
+    import queue
+    assert A.Core(queue.Queue(), sd_module=TC.FakeSD).s['theme'] == 'light'
+    core.s['theme'] = 'light'
+    # language: the window is rebuilt, the chat survives
     n_lines = len(app.chat_lines)
     old_cb = app.cb_bcn_channel
     app.set_lang('en')
@@ -279,20 +289,18 @@ def main():
     assert old_cb.__dict__.get('_dead'), 'the old widgets must be destroyed by the rebuild'
     assert app.nb.__dict__.get('_dead') is None and len(app.tab_outer) == 6
     assert i18n.LANG == 'en' and core.s['lang'] == 'en'
-    app.set_theme('dark')
     assert len(app.chat_lines) == n_lines
     core.q.put(('sys', 'after rebuild'))
     core._on_sel_call(dict(c, message=''), time.time())
     app.poll()
     app.open_help()
     app.set_lang('ru')
-    app.set_theme('light')
     app.on_close()
 
     log = open(A.LOG_FILE, encoding='utf-8').read()
     assert 'UI ERROR' not in log, log[log.find('UI ERROR') - 200:][:3000]
     print('OK  GUI: built, events handled, limits marked, Selcall and HFPager call banners/answers, macros, '
-          'beacon (CW), preamble for scanning, scan start/stop, main-page SCAN, decoder and 6 channel buttons (rename), meter/overload, «Выключено» ports, scenarios, help, RU/EN and light/dark rebuild — '
+          'beacon (CW), preamble for scanning, scan start/stop, main-page SCAN, decoder and 6 channel buttons (rename), meter/overload, «Выключено» ports, scenarios, help, RU/EN rebuild, own IDs in the fields, no dark theme — '
           'no UI errors')
 
 

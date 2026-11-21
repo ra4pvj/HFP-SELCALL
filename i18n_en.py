@@ -155,10 +155,6 @@ EN = {
         'Exit',
     'Файл':
         'File',
-    'Светлая тема':
-        'Light theme',
-    'Тёмная тема':
-        'Dark theme',
     'Вид':
         'View',
     'Инструкция (F1)':
@@ -431,8 +427,6 @@ EN = {
         'Program',
     'Язык интерфейса:':
         'Interface language:',
-    'Тема:':
-        'Theme:',
     'Вторые часы (первые — UTC):':
         'Second clock (the first is UTC):',
     'Журнал и отложенные сообщения:':
@@ -839,4 +833,8 @@ EN = {
         'Transmission: %s — retrying',
     'Запрос %s от ID %d с запросом подтверждения — отвечаю подтверждением':
         '%s request from ID %d with an acknowledgement request — answering with the acknowledgement',
+    'Мой ID: %s':
+        'My ID: %s',
+    'Мой Selcall ID: %s':
+        'My Selcall ID: %s',
 }

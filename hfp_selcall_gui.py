@@ -4,8 +4,8 @@ HFP+SELCALL window (tkinter).  The main page is the chat only; everything else l
     Chat | New message / call | HFPager | HF Selcall | Transceiver & audio | Program
 
 Above the tabs (always visible): RX/TX lamps, input level meter (peak dBFS, green / yellow / red),
-spectrum, two seven-segment clocks (UTC and a chosen time zone).  Language (RU/EN) and theme
-(light/dark) are switched from the menu or the Program tab: the window is rebuilt, the radio keeps
+spectrum, two seven-segment clocks (UTC and a chosen time zone).  The language (RU/EN) is switched
+from the menu or the Program tab: the window is rebuilt, the radio keeps
 working (the Core with the audio streams is not touched).
 """
 import copy
@@ -542,11 +542,6 @@ class App:
         v = tk.Menu(m, tearoff=0)
         self.m_theme = tk.StringVar(value=self.core.s.get('theme', 'light'))
         self.m_lang = tk.StringVar(value=self.core.s.get('lang', 'ru'))
-        v.add_radiobutton(label=T('Светлая тема'), variable=self.m_theme, value='light',
-                          command=lambda: self.set_theme('light'))
-        v.add_radiobutton(label=T('Тёмная тема'), variable=self.m_theme, value='dark',
-                          command=lambda: self.set_theme('dark'))
-        v.add_separator()
         v.add_radiobutton(label='Русский', variable=self.m_lang, value='ru', command=lambda: self.set_lang('ru'))
         v.add_radiobutton(label='English', variable=self.m_lang, value='en', command=lambda: self.set_lang('en'))
         m.add_cascade(label=T('Вид'), menu=v)
@@ -556,11 +551,17 @@ class App:
         m.add_cascade(label=T('Справка'), menu=h)
         self.root.configure(menu=m)
 
-    def set_theme(self, theme):
-        if self.core.s.get('theme') != theme:
-            self.pull()
-            self.core.s['theme'] = theme
-            self.rebuild()
+    def own_id_var(self, key, fmt):
+        """a label variable showing the own ID as it is typed on the HFPager / HF Selcall tab"""
+        out = self.tk.StringVar(value='')
+
+        def upd(*_a):
+            v = str(self.var[key].get()).strip()
+            out.set(fmt % (v or '—'))
+        self.var[key].trace_add('write', upd)
+        upd()
+        self.__dict__.setdefault('own_id_vars', {})[key] = out
+        return out
 
     def set_lang(self, lang):
         if self.core.s.get('lang') != lang:
@@ -965,6 +966,9 @@ class App:
                      state='readonly').pack(side='left')
         ttk.Label(r, text=T('Бод')).pack(side='left', padx=(2, 8))
         ttk.Checkbutton(r, text=T('Запрос подтверждения'), variable=self.var['ack']).pack(side='left')
+        # own IDs in the right corner of each field
+        ttk.Label(r, textvariable=self.own_id_var('my_id', T('Мой ID: %s')),
+                  foreground=self.colors()['dim']).pack(side='right')
         self.msg = LimitedText(tk, h, 252, cost_hfp, on_change=self.update_counter, on_enter=self.on_send,
                                width=30, font=font, colors=colors)
         self.msg.w.configure(height=3)
@@ -983,6 +987,8 @@ class App:
         s.grid(row=0, column=1, sticky='nsew', padx=(4, 0))
         r = ttk.Frame(s)
         r.pack(fill='x')
+        ttk.Label(r, textvariable=self.own_id_var('sel_my_id', T('Мой Selcall ID: %s')),
+                  foreground=self.colors()['dim']).pack(side='right')
         ttk.Label(r, text=T('Кому (Selcall ID):')).pack(side='left')
         ttk.Entry(r, textvariable=self.var['sel_to_id'], width=7, font=font).pack(side='left', padx=(4, 10))
         ttk.Checkbutton(r, text=T('Транслит'), variable=self.var['sel_translit'],
@@ -1674,12 +1680,6 @@ class App:
         cl.grid(row=0, column=1, sticky='w')
         cl.bind('<<ComboboxSelected>>', lambda e: self.set_lang('en' if self.var['lang'].get() == 'English'
                                                                 else 'ru'))
-        ttk.Label(g, text=T('Тема:')).grid(row=1, column=0, sticky='e', padx=4, pady=3)
-        ct = ttk.Combobox(g, textvariable=self.var['theme'], values=[T('Светлая'), T('Тёмная')], width=14,
-                          state='readonly')
-        ct.grid(row=1, column=1, sticky='w')
-        ct.bind('<<ComboboxSelected>>', lambda e: self.set_theme('dark' if self.var['theme'].get() == T('Тёмная')
-                                                                 else 'light'))
         ttk.Label(g, text=T('Вторые часы (первые — UTC):')).grid(row=2, column=0, sticky='e', padx=4, pady=3)
         cz = ttk.Combobox(g, textvariable=self.var['clock_tz'], values=[tz_label(k) for k, _l, _h in TIME_ZONES],
                           width=22, state='readonly')
