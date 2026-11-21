@@ -210,8 +210,12 @@ def main():
     assert list(cv._items.values())[0]['height'] == 900
     assert len(app.scroll_canvases) == len(app.tab_outer) == 6
 
-    # top strip: the spectrum takes what the other parts leave, so the strip is never wider than the window
+    # top strip: 5 % of its width more margin on each side
     import hfp_selcall_gui as G
+    app.strip_box._size = (1200, 120)
+    app.fit_strip_sides()
+    assert app.mon_bar._pack['padx'] == G.STRIP_PAD + 60, app.mon_bar.__dict__.get('_pack')
+    # the spectrum takes what the other parts leave, so the strip is never wider than the window
     fixed = sum(w.winfo_reqwidth() for w in app.mon_fixed)
     for width, want in ((2000, G.WF_MAX), (fixed + 4 * G.MON_GAP_MIN + 2 + 366, 366), (300, G.WF_MIN)):
         app.mon_bar._size = (width, 120)

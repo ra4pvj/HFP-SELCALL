@@ -44,7 +44,8 @@ WF_BINS = 270                    # spectrum rows from the receiver: 300..3000 Hz
 WF_MIN, WF_MAX = 200, 540        # spectrum width on screen follows the window width between these
 MON_GAP_MIN = 8                  # smallest gap between the parts of the top strip
 NB_PADX = 8                      # notebook (tabs) distance from the window edges; the top strip frame uses it too
-STRIP_PAD = 14                   # lamps / decoder buttons distance from the top strip frame
+STRIP_PAD = 14                   # least distance of the lamps / decoder buttons from the strip's edges
+STRIP_SIDE = 0.05                # and in addition this share of the strip width on each side
 OVER_DB = 20 * np.log10(A.CLIP_LEVEL)      # -0.18 dBFS
 
 
@@ -566,14 +567,14 @@ class App:
         tk, ttk = self.tk, self.ttk
         # five parts spread over the whole width with equal gaps and the same margin at both edges:
         # lamps | level meter | spectrum | clocks | decoder buttons  (grid: equal-weight spacer columns between)
-        # the strip sits in a frame as wide as the notebook below (same 8 px from the window), so the left and
-        # right borders of the window content run on upwards; inside, 14 px from that frame
-        box = tk.Frame(self.root, highlightthickness=1, borderwidth=0,
-                       highlightbackground=self.colors()['border'], highlightcolor=self.colors()['border'],
-                       background=self.colors()['bg'] or self.root_bg_default)
+        # the strip lines up with the notebook below (same 8 px from the window, no frame of its own); the outer
+        # parts stand STRIP_SIDE (5 %) of the width further in on each side, so the parts sit closer together
+        box = ttk.Frame(self.root)
         box.pack(side='top', fill='x', padx=NB_PADX, pady=(8, 2))
         bar = ttk.Frame(box)
         bar.pack(fill='x', padx=STRIP_PAD, pady=6)
+        self.strip_box, self.strip_pad = box, STRIP_PAD
+        box.bind('<Configure>', lambda e: self.fit_strip_sides())
         for col in (1, 3, 5, 7):
             bar.columnconfigure(col, weight=1, uniform='gap', minsize=MON_GAP_MIN)
         lamp_fr = ttk.Frame(bar)
@@ -670,6 +671,19 @@ class App:
             ax.create_text(min(xx, w - 14), 10, text=str(f_hz), font=('Helvetica', 8), fill=self.colors()['dim'])
         if self.wf_state.get('lo') is not None:
             self.draw_waterfall()
+
+    def fit_strip_sides(self):
+        """side margin of the strip = STRIP_PAD + 5 % of its width (changed only when it really changes)"""
+        try:
+            w = int(self.strip_box.winfo_width())
+        except Exception:
+            return
+        if w <= 1:
+            return
+        pad = STRIP_PAD + int(round(STRIP_SIDE * w))
+        if pad != self.strip_pad:
+            self.strip_pad = pad
+            self.mon_bar.pack_configure(padx=pad)
 
     def fit_monitor(self):
         """the window width changed: give the spectrum what the other four parts and the minimum gaps leave"""

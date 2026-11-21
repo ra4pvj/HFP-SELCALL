@@ -93,6 +93,9 @@ class Misc:
     def grid_remove(self):
         self._gridded = False
 
+    def pack_configure(self, **k):
+        self.__dict__.setdefault('_pack', {}).update(k)
+
     def winfo_screenheight(self):
         return 900
 
