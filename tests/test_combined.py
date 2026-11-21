@@ -518,6 +518,58 @@ def test_scan_timing():
     print('OK  scan timing: preamble detected <= 0.5 s after landing (-7 dB SNR); Selcall decoded from 0.3 s of dots')
 
 
+def test_auto_ack(tmp):
+    """auto-ACK: sent with the standard preamble, after our own TX if busy, once per frame, again for a repeat"""
+    c2, _q2 = make_core(tmp)
+    c2.s.update(my_id='5', ack=True, speed='23.44', hfp_pre_seconds=0, ptt_delay=0.0, hfp_listen_after_tx=False)
+    FakeSD.played.clear()
+    assert c2.send(1234, 'HELLO') is None
+    c2._tx_thread.join(30)
+    audio, fs = FakeSD.played[-1]
+    core, q = make_core(tmp)
+    core.s.update(my_id='1234', auto_ack=True, ack=False, hfp_pre_seconds=12.0, hfp_ring_air=False,
+                  bcn_req_enable=False, ptt_delay=0.0, hfp_listen_after_tx=False, hfp_listen_after_call=False)
+    assert core.start_rx()
+    FakeSD.played.clear()
+    gap = np.zeros(2 * fs, np.float32)
+    push(core, np.concatenate([gap, audio, gap, gap]), fs)
+    items = drain(q, 6.0)
+    rx = [i[1] for i in items if i[0] == 'rx']
+    assert rx and rx[0]['b1'] & 0x02 and rx[0]['dest'] == 1234, rx
+    assert [i for i in items if i[0] == 'tx_ack'], [i[0] for i in items]
+    ack_len = len(FakeSD.played[-1][0]) / FakeSD.played[-1][1]
+    assert ack_len < A.Core.air_time('23.44', 0, 12.0) - 5, ack_len   # standard preamble, not the 12 s one
+    fr = rx[0]
+    # the same frame twice at once -> one ACK; we are transmitting -> the ACK goes right after that TX
+    FakeSD.played.clear()
+    old_gap, A.ACK_REPEAT_GAP = A.ACK_REPEAT_GAP, 2.0
+    try:
+        core._acked.clear()
+        core.tx_busy = True
+        core._on_frame(fr, {})
+        core._on_frame(fr, {})
+        time.sleep(2.5)
+        assert not FakeSD.played, 'no ACK while transmitting'
+        core.tx_busy = False
+        t0 = time.time()
+        while not FakeSD.played and time.time() - t0 < 5:
+            time.sleep(0.1)
+        core._tx_thread.join(30)
+        assert len(FakeSD.played) == 1, len(FakeSD.played)
+        # the sender repeats (it did not hear our ACK) -> confirmed again
+        time.sleep(0.5)
+        core._on_frame(fr, {})
+        t0 = time.time()
+        while len(FakeSD.played) < 2 and time.time() - t0 < 6:
+            time.sleep(0.1)
+        core._tx_thread.join(30)
+        assert len(FakeSD.played) == 2, len(FakeSD.played)
+    finally:
+        A.ACK_REPEAT_GAP = old_gap
+        core.stop_rx()
+    print('OK  auto-ACK: standard preamble (%.1f s), waits for our TX, once per frame, again for a repeat' % ack_len)
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         test_scan_timing()
@@ -528,4 +580,5 @@ if __name__ == '__main__':
         test_both_receivers(tmp)
         test_selcall_03x(tmp)
         test_answer_listen_ext(tmp)
+        test_auto_ack(tmp)
     print('ALL OK')

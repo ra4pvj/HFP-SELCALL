@@ -815,4 +815,8 @@ EN = {
         'channel %d «%s»',
     'Декодеры':
         'Decoders',
+    'Автоподтверждение для ID %d не отправлено: передатчик занят.':
+        'Auto-acknowledgement for ID %d not sent: the transmitter is busy.',
+    'Автоподтверждение для ID %d не отправлено: %s':
+        'Auto-acknowledgement for ID %d not sent: %s',
 }

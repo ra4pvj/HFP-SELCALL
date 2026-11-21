@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta16'
+APP_VERSION = '0.3.0-beta17'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -147,6 +147,7 @@ def default_macros():
         [dict(label='', kind='hfp_msg', to='', text='', now=False) for _ in range(5)]
 
 
+ACK_REPEAT_GAP = 10.0  # s: one auto-ACK per frame within this time (a repeat after it is confirmed again)
 CLIP_LEVEL = 0.98      # |sample| >= 0.98 of full scale (-0.18 dBFS) = input overload (also in hfpager_rx)
 
 
@@ -183,6 +184,7 @@ class Core:
         self.fs = 48000
         self.tx_busy = False
         self._seen = {}
+        self._acked = {}               # (sender, counter, header CRC) -> time of our auto-ACK
         self._tx_thread = None
         self.pending = {}          # (counter, header crc) -> (dest, text, time) awaiting an ACK
         self.ptt = P.PttController()
@@ -674,9 +676,14 @@ class Core:
                 and not dup and ' '.join(fr['text'].decode('cp1251', 'replace').upper().split())
                 == ' '.join(str(self.s.get('outbox_trigger', 'QRU?')).upper().split())):
             threading.Thread(target=self.on_qru, args=(fr['sender'],), daemon=True).start()
+        # auto-ACK also for a repeat: the sender repeats because it did not hear our ACK; the same frame decoded
+        # twice at once (both input channels / both decoders) is confirmed only once
         if (self.s.get('auto_ack') and fr.get('kind') == 'msg' and (fr['b1'] & 0x02)
-                and fr['dest'] == int(self.s['my_id']) and not dup):
-            threading.Timer(1.5, self.send_ack, args=(fr,)).start()
+                and fr['dest'] == int(self.s['my_id'])):
+            akey = (fr['sender'], fr['counter'], fr['hdr_crc'])
+            if now - self._acked.get(akey, 0) > ACK_REPEAT_GAP:
+                self._acked[akey] = now
+                threading.Thread(target=self._ack_when_free, args=(fr,), daemon=True).start()
 
     # ---- deferred messages (sent when the addressee asks "QRU?") -----------------------------------
     OUTBOX_HEADER = (T('# HFPager: отложенные сообщения. Одна строка = одно сообщение:  ID получателя|текст\n'
@@ -885,14 +892,29 @@ class Core:
         if err:
             self.sys(err)
 
-    def send_ack(self, fr):
-        """experimental: confirm delivery of a received message"""
-        if self.tx_busy or self.sd is None:
+    def _ack_when_free(self, fr, delay=1.5, timeout=30.0):
+        """auto-ACK 1.5 s after the message; if we are transmitting just then, right after that transmission"""
+        time.sleep(delay)
+        t0 = time.time()
+        while self.tx_busy and time.time() - t0 < timeout:
+            time.sleep(0.2)
+        if self.tx_busy:
+            self.sys(T('Автоподтверждение для ID %d не отправлено: передатчик занят.') % fr['sender'])
             return
+        err = self.send_ack(fr)
+        if err:
+            self.sys(T('Автоподтверждение для ID %d не отправлено: %s') % (fr['sender'], err))
+
+    def send_ack(self, fr):
+        """confirm delivery of a received message; returns error text or None"""
+        if self.tx_busy:
+            return T('Передача уже идёт.')
+        if self.sd is None:
+            return T('Звуковая библиотека недоступна: %s') % SD_ERROR
         own = int(self.s['counter']) & 0xFF
         with R.MODEM_LOCK:
             M.set_speed(fr['speed'])
-            nib = self.pre_extra(fr['speed']) + M.tx_nibbles(M.ack_frame_nibbles(fr['sender'], fr['counter'], fr['hdr_crc'],
+            nib = M.tx_nibbles(M.ack_frame_nibbles(fr['sender'], fr['counter'], fr['hdr_crc'],
                                                    orig_len=fr['length'], own_counter=own))
             audio = M.synth(M.nibbles_to_tones(nib), fs=self.fs, f0=float(self.s['f0']),
                             amp=float(self.s['tx_level']), lead=float(self.s['ptt_delay']), tail=0.3)
@@ -905,6 +927,7 @@ class Core:
                                            args=(audio.astype(np.float32), self._idx(self.s['out_dev'])),
                                            daemon=True)
         self._tx_thread.start()
+        return None
 
     # ---- transmitting
     @staticmethod
