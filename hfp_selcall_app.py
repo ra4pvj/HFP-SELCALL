@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta5'
+APP_VERSION = '0.3.0-beta6'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -90,24 +90,35 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 bcn_enable=False, bcn_mode='interval', bcn_interval=30.0, bcn_times='00:00 06:00 12:00 18:00',
                 bcn_kind='hfp_beacon', bcn_to='0', bcn_text='', bcn_cw_wpm=20.0, bcn_cw_tone=800.0,
                 # ---- stage 3: HFPager preamble length (0 = standard of the speed) and channel scanning
-                hfp_pre_seconds=0.0, scan_channels=None, scan_resume=30.0)
+                hfp_pre_seconds=0.0, scan_channels=None, scan_resume=30.0,
+                # HFPager decoder on/off (the Selcall one is sel_enable); the spectrum and the level keep working
+                hfp_enable=True)
 
-SCAN_CHANNELS = 8
+SCAN_CHANNELS = 6
 # Measured with this receiver (tests in the stage-3 commit):
 #  * a preamble / Selcall dots already on air are detected 0.3 s after landing on the channel (3 blocks of
 #    0.1 s; also at -7 dB SNR in 3 kHz) -> a dwell of 1…1.5 s per channel is enough if the radio settles fast;
 #  * HFPager decodes only if >= ~2 s of preamble is still left (5.86 Bd: 2.1 s ok / 1.1 s not; 23.44: 1.7 / 0.7;
-#    46.88: 1.4 / 0.6) -> preamble >= scan cycle + 2.5 s;
-#  * Selcall decodes even with 0.3 s of dots left -> dots >= scan cycle + 1 s (CODAN 6 s dots: 5-6 channels of 1 s).
-HFP_PRE_MARGIN = 2.5
-SEL_DOTS_MARGIN = 1.0
-SCAN_DWELL_DEFAULT = 1.5
+#    46.88: 1.4 / 0.6);
+#  * Selcall decodes even with 0.3 s of dots left.
+# Worst case: the call starts just after the scanner left that channel; it comes back after the OTHER channels,
+# (N-1) x (dwell + retune), then needs 0.3 s to notice the signal and the part of it that the decoder needs:
+#    HFPager preamble >= (N-1) x (dwell + retune) + 2.3 s
+#    Selcall dots     >= (N-1) x (dwell + retune) + 0.6 s   (CODAN 6 s dots: 6 channels of 1 s with a fast radio)
+HFP_PRE_MARGIN = 2.3
+SEL_DOTS_MARGIN = 0.6
+SCAN_DWELL_DEFAULT = 1.0
 
 
 def default_scan_channels():
-    f = [('3.600', 'LSB'), ('7.100', 'LSB'), ('10.140', 'USB'), ('14.100', 'USB')]
-    out = [dict(on=True, freq=a, mode=b, dwell=SCAN_DWELL_DEFAULT) for a, b in f]
-    return out + [dict(on=False, freq='', mode='USB', dwell=SCAN_DWELL_DEFAULT) for _ in range(SCAN_CHANNELS - len(out))]
+    f = [('80m', '3.600', 'LSB', True), ('40m', '7.100', 'LSB', True), ('30m', '10.140', 'USB', True),
+         ('20m', '14.100', 'USB', True), ('17m', '18.100', 'USB', False), ('15m', '21.100', 'USB', False)]
+    return [dict(name=n, on=o, freq=a, mode=b, dwell=SCAN_DWELL_DEFAULT) for n, a, b, o in f]
+
+
+def channel_caption(ch, i):
+    """caption of a channel button: its name, else its frequency, else the number"""
+    return str(ch.get('name') or '').strip() or str(ch.get('freq') or '').strip() or str(i + 1)
 
 
 def standard_preamble_seconds(speed):
@@ -158,7 +169,12 @@ class Core:
         m = self.s.get('macros')
         if not isinstance(m, list) or len(m) != 10:
             self.s['macros'] = default_macros()
+        # both decoders are on at every start, whatever they were when the program was closed
+        self.s['hfp_enable'] = True
+        self.s['sel_enable'] = True
         sc = self.s.get('scan_channels')
+        if isinstance(sc, list) and len(sc) > SCAN_CHANNELS:          # 0.3.0-beta5 had 8 channels: keep 6
+            sc = self.s['scan_channels'] = sc[:SCAN_CHANNELS]
         if not isinstance(sc, list) or len(sc) != SCAN_CHANNELS:
             self.s['scan_channels'] = default_scan_channels()
         self.engine = None
@@ -205,6 +221,10 @@ class Core:
         self.scan_ch = None               # index of the current scan channel
         self.scan_ignore_until = 0.0      # retune transients must not stop the scan
         self._scan_thread = None
+        self.scan_retune = None           # measured duration of a retune (CAT), s
+        self.scan_home_hz = None          # the transceiver's frequency before the scan started (restored on stop)
+        self.scan_no_restore = False      # a channel button was pressed: stay there
+        self.cur_channel = None           # channel last tuned by a button or by the scan
         threading.Thread(target=self._rx_watchdog, daemon=True).start()
         threading.Thread(target=self._beacon_loop, daemon=True).start()
 
@@ -320,6 +340,8 @@ class Core:
         self.fs = fs
         self.engine = R.RxEngine(fs, self._on_frame, self._on_event, afc=bool(self.s['afc']))
         self.engine.pk_margin = float(self.s.get('sens_db', 4.0))
+        self._all_speeds = tuple(self.engine.speeds)
+        self.set_hfp_decoder(self.s.get('hfp_enable', True))
         self.engine.start()
         if self.s.get('sel_enable', True):
             self.sel = SE.SelcallEngine(fs, self._on_sel_call, self._on_sel_event, afc=bool(self.s['sel_afc']),
@@ -405,6 +427,13 @@ class Core:
             if self.stream is not None and now - self.last_audio > 4 and now - self.last_restart > 10:
                 self.last_restart = now
                 self.q.put(('rx_restart', now - self.last_audio))
+
+    def set_hfp_decoder(self, on):
+        """HFPager decoder on/off without stopping the input: with no speeds to try the engine still finds signals
+        (spectrum, level, the scanner's activity check) but decodes nothing"""
+        self.s['hfp_enable'] = bool(on)
+        if self.engine is not None:
+            self.engine.speeds = self._all_speeds if on else ()
 
     def apply_live_settings(self):
         if self.engine is not None:
@@ -597,6 +626,8 @@ class Core:
     def _on_event(self, kind, info):
         if kind == 'state' and info.get('state') in ('receiving', 'decoding') and time.time() > self.scan_ignore_until:
             self.last_activity = time.time()
+        if kind == 'fail' and not self.s.get('hfp_enable', True):
+            return                       # decoder off: a signal is not a failed frame
         self.q.put(('event', kind, info))
 
     def _on_frame(self, fr, info):
@@ -935,28 +966,51 @@ class Core:
                 out.append(i)
         return out
 
+    def scan_retune_seconds(self):
+        """time of one retune (CAT command), measured while scanning; 0.2 s until measured"""
+        return self.scan_retune if self.scan_retune is not None else 0.2
+
     def scan_cycle_seconds(self):
-        return sum(float(self.s['scan_channels'][i].get('dwell') or SCAN_DWELL_DEFAULT) for i in self.scan_list())
+        """one full round over the ticked channels, retunes included"""
+        lst = self.scan_list()
+        return sum(float(self.s['scan_channels'][i].get('dwell') or SCAN_DWELL_DEFAULT) for i in lst) + \
+            len(lst) * self.scan_retune_seconds()
+
+    def scan_return_seconds(self):
+        """worst case: from leaving a channel to being back on it = the round over the OTHER channels"""
+        lst = self.scan_list()
+        if not lst:
+            return 0.0
+        return self.scan_cycle_seconds() * (len(lst) - 1) / len(lst)
 
     def preamble_for_scan(self):
         """HFPager preamble a CALLING station needs so that this scanning station catches it"""
-        return round(self.scan_cycle_seconds() + HFP_PRE_MARGIN, 1)
+        return round(self.scan_return_seconds() + HFP_PRE_MARGIN, 1)
 
     def dots_for_scan(self):
         """Selcall dots for the same (CODAN default 6 s, at most 20 s)"""
-        return round(max(6.0, min(20.0, self.scan_cycle_seconds() + SEL_DOTS_MARGIN)), 1)
+        return round(max(6.0, min(20.0, self.scan_return_seconds() + SEL_DOTS_MARGIN)), 1)
+
+    def max_channels_for(self, seconds, margin):
+        """how many channels of the current dwell a preamble / dots of `seconds` covers"""
+        lst = self.scan_list()
+        dwell = (sum(float(self.s['scan_channels'][i].get('dwell') or SCAN_DWELL_DEFAULT) for i in lst) / len(lst)
+                 if lst else SCAN_DWELL_DEFAULT)
+        return max(0, int((seconds - margin) / (dwell + self.scan_retune_seconds())) + 1)
 
     def start_scan(self):
         """returns error text or None"""
         lst = self.scan_list()
         if len(lst) < 2:
-            return T('Для сканирования отметьте от 2 до 8 каналов с частотой.')
+            return T('Для сканирования отметьте от 2 до 6 каналов с частотой.')
         cfg = self.rig_cfg()
         if not cfg.get('port'):
             return T('Не выбран COM-порт CAT трансивера (вкладка «Трансивер и аудио»).')
         if self.scan_on:
             return None
         self.scan_on = True
+        self.scan_home_hz = None
+        self.scan_no_restore = False
         self._scan_thread = threading.Thread(target=self._scan_loop, daemon=True)
         self._scan_thread.start()
         self.sys(T('Сканирование: %d каналов, цикл %.0f с') % (len(lst), self.scan_cycle_seconds()))
@@ -965,13 +1019,46 @@ class Core:
     def stop_scan(self):
         self.scan_on = False
 
+    def tune_channel(self, i):
+        """channel button: stop the scan (without going back) and tune channel i (in a thread)"""
+        ch = self.s['scan_channels'][i]
+        if not str(ch.get('freq', '')).strip():
+            return T('У канала %d не задана частота (таблица каналов на вкладке «Трансивер и аудио»).') % (i + 1)
+        if not self.rig_cfg().get('port'):
+            return T('Не выбран COM-порт CAT трансивера (вкладка «Трансивер и аудио»).')
+        if self.scan_on:
+            self.scan_no_restore = True
+            self.scan_on = False
+
+        def work():
+            th = self._scan_thread
+            if th is not None and th is not threading.current_thread():
+                th.join(5.0)
+            ok = self.run_actions_logged('FRQ %s %s' % (str(ch['freq']).strip(), ch.get('mode') or 'USB'),
+                                         T('канал %d «%s»') % (i + 1, channel_caption(ch, i)))
+            if ok:
+                self.cur_channel = i
+            self.q.put(('scan_state',))
+        threading.Thread(target=work, daemon=True).start()
+        return None
+
     def _busy_for_scan(self):
         return (self.tx_busy or self.listener.active or self.ringer.active or
                 (self.engine is not None and getattr(self.engine, '_seg', None) is not None))
 
     def _scan_loop(self):
         k = 0
+        restore = True
         try:
+            while self.tx_busy and self.scan_on:
+                time.sleep(0.2)
+            try:                          # where the transceiver was: it goes back there when the scan stops
+                self.scan_home_hz = self.rig.read_freq(self.rig_cfg())
+                self.sys(T('Сканирование: исходная частота %s МГц') % G.fmt_mhz(self.scan_home_hz))
+            except Exception as ex:
+                self.scan_home_hz = None
+                self.sys(T('Сканирование: не удалось прочитать частоту трансивера (%s) — после остановки он '
+                           'останется на последнем канале') % ex)
             while self.scan_on:
                 lst = self.scan_list()
                 if len(lst) < 2:
@@ -984,12 +1071,17 @@ class Core:
                     time.sleep(0.2)
                 act = 'FRQ %s %s' % (str(ch['freq']).strip(), ch.get('mode') or 'USB')
                 self.scan_ignore_until = time.time() + 0.5      # retune click / AGC
+                t_cat = time.time()
                 res = self.rig.run_actions(self.rig_cfg(), act)
+                dt = time.time() - t_cat
+                self.scan_retune = dt if self.scan_retune is None else 0.8 * self.scan_retune + 0.2 * dt
                 bad = [m for _a, good, m in res if not good]
                 if bad:
                     self.sys(T('Сканирование остановлено: ошибка CAT: %s') % bad[0])
+                    restore = False
                     break
                 self.scan_ch, self.scan_state = i, 'scan'
+                self.cur_channel = i
                 self.q.put(('scan_state',))
                 t_end = time.time() + max(1.0, float(ch.get('dwell') or SCAN_DWELL_DEFAULT))
                 while self.scan_on and time.time() < t_end:
@@ -1012,7 +1104,20 @@ class Core:
             self.sys(T('Сканирование: ошибка %s') % ex)
         finally:
             self.scan_on = False
+            if restore and self.scan_home_hz and not self.scan_no_restore:
+                t0 = time.time()
+                while self.tx_busy and time.time() - t0 < 120:      # do not retune under our own transmission
+                    time.sleep(0.2)
+                try:
+                    hz = self.scan_home_hz
+                    res = self.rig.run_actions(self.rig_cfg(), 'FRQ %s' % G.fmt_mhz(hz))
+                    bad = [m for _a, good, m in res if not good]
+                    self.sys(T('Сканирование остановлено, трансивер возвращён на %s МГц') % G.fmt_mhz(hz) if not bad
+                             else T('Сканирование остановлено; вернуть частоту не удалось: %s') % bad[0])
+                except Exception as ex:
+                    self.sys(T('Сканирование остановлено; вернуть частоту не удалось: %s') % ex)
             self.scan_state = 'off'
+            self.scan_ch = None
             self.q.put(('scan_state',))
 
     # ---- beacon (by interval or at given UTC times)

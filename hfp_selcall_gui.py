@@ -418,6 +418,7 @@ class App:
         self.update_counter()
         self.sel_update_counter()
         self.update_sel_buttons()
+        self.update_scan_ui()
         for text, tag in self.chat_lines[-2000:]:
             self._insert(text, tag)
         if self.banner_call is not None:
@@ -446,7 +447,8 @@ class App:
             level_txt=tk.StringVar(value='— dBFS'), clip=tk.StringVar(value=''),
             in_channel=tk.StringVar(value=self.in_channels()[int(s.get('in_channel') or 0)]),
             # selcall
-            sel_enable=bv('sel_enable'), sel_my_id=sv('sel_my_id'), sel_to_id=sv('sel_to_id'),
+            sel_enable=bv('sel_enable'), hfp_enable=bv('hfp_enable'), scan_btn=tk.BooleanVar(value=False),
+            scan_calc=tk.StringVar(value=''), chan_sel=tk.IntVar(value=-1), sel_my_id=sv('sel_my_id'), sel_to_id=sv('sel_to_id'),
             sel_dot_seconds=sv('sel_dot_seconds'), sel_translit=bv('sel_translit'), sel_afc=bv('sel_afc'),
             sel_center=sv('sel_center', '%.0f'), sel_ring=bv('sel_ring'),
             sel_ring_style=tk.StringVar(value=T(styles.get(s['sel_ring_style'], SE.RING_STYLES[0][1]))),
@@ -704,6 +706,29 @@ class App:
         self.build_compose(f)
         bar = ttk.Frame(f)
         bar.pack(side='bottom', fill='x', pady=(2, 2))
+        # decoders on/off and the scan mode: pressed = on
+        self.tb_hfp = ttk.Checkbutton(bar, text='HFPager', style='Toolbutton', variable=self.var['hfp_enable'],
+                                      command=self.toggle_hfp, width=12)
+        self.tb_hfp.pack(side='left', padx=(0, 4))
+        self.tb_sel = ttk.Checkbutton(bar, text='Selcall', style='Toolbutton', variable=self.var['sel_enable'],
+                                      command=self.toggle_sel, width=12)
+        self.tb_sel.pack(side='left', padx=4)
+        self.update_decoder_buttons()
+        # channel row: SCAN + 6 channel buttons (captions from the channel table; right click renames)
+        crow = ttk.Frame(f)
+        crow.pack(side='bottom', fill='x', pady=(4, 0))
+        self.tb_scan = ttk.Checkbutton(crow, text=T('СКАН'), style='Toolbutton', variable=self.var['scan_btn'],
+                                       command=self.toggle_scan, width=10)
+        self.tb_scan.pack(side='left', padx=(0, 8))
+        self.chan_btns = []
+        for i in range(A.SCAN_CHANNELS):
+            b = ttk.Radiobutton(crow, text=str(i + 1), style='Toolbutton', variable=self.var['chan_sel'], value=i,
+                                command=lambda i_=i: self.on_channel(i_), width=10)
+            b.pack(side='left', padx=2)
+            for ev in ('<Button-3>',) + (('<Button-2>', '<Control-Button-1>') if sys.platform == 'darwin' else ()):
+                b.bind(ev, lambda e, i_=i: self.rename_channel(i_))
+            self.chan_btns.append(b)
+        self.refresh_channel_buttons()
         ttk.Checkbutton(bar, text=T('Только адресованные мне (фильтр ID)'), variable=self.var['only_mine'],
                         command=self.apply).pack(side='left')
         ttk.Button(bar, text=T('Очистить окно'), command=self.clear_chat).pack(side='right', padx=4)
@@ -1148,21 +1173,22 @@ class App:
         sf.pack(fill='x', pady=(8, 0))
         grid = ttk.Frame(sf)
         grid.pack(fill='x')
-        for col, (t, w) in enumerate(((T('№'), 3), (T('Вкл'), 4), (T('Частота, МГц'), 12), (T('Режим'), 9),
-                                      (T('Задержка на канале, с'), 18))):
+        for col, (t, w) in enumerate(((T('№'), 3), (T('Подпись кнопки'), 14), (T('В скане'), 7),
+                                      (T('Частота, МГц'), 12), (T('Режим'), 9), (T('Задержка на канале, с'), 18))):
             ttk.Label(grid, text=t, width=w).grid(row=0, column=col, sticky='w', padx=2)
         self.scan_vars = []
         for i, c in enumerate(self.core.s['scan_channels']):
-            cv = dict(on=tk.BooleanVar(value=bool(c.get('on'))), freq=tk.StringVar(value=str(c.get('freq', ''))),
-                      mode=tk.StringVar(value=c.get('mode') or 'USB'), dwell=tk.StringVar(value='%g' % float(
-                          c.get('dwell') or 3)))
+            cv = dict(name=tk.StringVar(value=str(c.get('name', ''))), on=tk.BooleanVar(value=bool(c.get('on'))),
+                      freq=tk.StringVar(value=str(c.get('freq', ''))), mode=tk.StringVar(value=c.get('mode') or 'USB'),
+                      dwell=tk.StringVar(value='%g' % float(c.get('dwell') or A.SCAN_DWELL_DEFAULT)))
             self.scan_vars.append(cv)
             ttk.Label(grid, text=str(i + 1), width=3).grid(row=i + 1, column=0, sticky='w', padx=2)
-            ttk.Checkbutton(grid, variable=cv['on']).grid(row=i + 1, column=1, sticky='w', padx=2)
-            ttk.Entry(grid, textvariable=cv['freq'], width=12).grid(row=i + 1, column=2, sticky='w', padx=2, pady=1)
+            ttk.Entry(grid, textvariable=cv['name'], width=14).grid(row=i + 1, column=1, sticky='w', padx=2, pady=1)
+            ttk.Checkbutton(grid, variable=cv['on']).grid(row=i + 1, column=2, sticky='w', padx=2)
+            ttk.Entry(grid, textvariable=cv['freq'], width=12).grid(row=i + 1, column=3, sticky='w', padx=2)
             ttk.Combobox(grid, textvariable=cv['mode'], values=G.MODES, width=8, state='readonly').grid(
-                row=i + 1, column=3, sticky='w', padx=2)
-            ttk.Entry(grid, textvariable=cv['dwell'], width=6).grid(row=i + 1, column=4, sticky='w', padx=2)
+                row=i + 1, column=4, sticky='w', padx=2)
+            ttk.Entry(grid, textvariable=cv['dwell'], width=6).grid(row=i + 1, column=5, sticky='w', padx=2)
         r = ttk.Frame(sf)
         r.pack(fill='x', pady=(6, 0))
         ttk.Label(r, text=T('Возобновить сканирование после тишины, с:')).pack(side='left', padx=4)
@@ -1170,15 +1196,18 @@ class App:
         self.btn_scan = ttk.Button(r, text=T('Начать сканирование'), command=self.toggle_scan, width=24)
         self.btn_scan.pack(side='left', padx=12)
         ttk.Button(r, text=T('Подобрать преамбулу и точки'), command=self.pre_for_scan).pack(side='left', padx=4)
-        ttk.Label(sf, text=T('Отметьте от 2 до 8 каналов. Программа перестраивает трансивер по кругу; если на канале '
+        ttk.Label(sf, text=T('Отметьте от 2 до 6 каналов. Программа перестраивает трансивер по кругу; если на канале '
                              'начинается приём (преамбула HFPager или точки Selcall) или идёт передача, сканирование '
                              'останавливается на этом канале и возобновляется после заданного времени тишины. '
-                             'Задержка на канале: сигнал обнаруживается через 0,3 с после перехода, поэтому хватает '
-                             '1–1,5 с (если трансивер быстро перестраивается). Вызывающая станция должна передавать '
-                             'преамбулу HFPager не короче цикла сканирования + 2,5 с (приёмнику нужно услышать ~2 с '
-                             'преамбулы) и точки Selcall не короче цикла + 1 с — кнопка «Подобрать» считает это по '
-                             'таблице.'),
+                             'Сигнал обнаруживается через 0,3 с после перехода, поэтому хватает задержки 1 с на канал. '
+                             'Худший случай — вызов начался сразу после ухода с канала: сканер вернётся через обход '
+                             'остальных каналов, (N − 1) × (задержка + перестройка). Поэтому вызывающая станция должна '
+                             'передавать точки Selcall не короче этого времени + 0,6 с, а преамбулу HFPager — + 2,3 с '
+                             '(приёмнику нужно услышать ~2 с преамбулы). Время перестройки сканер измеряет сам. '
+                             'Кнопка «Подобрать» считает длины по таблице. Кнопка «СКАН» есть и на главной странице.'),
                   foreground=dim, wraplength=880).pack(anchor='w', padx=4, pady=(4, 0))
+        ttk.Label(sf, textvariable=self.var['scan_calc'], font=(A.MONO_FONT, 11)).pack(anchor='w', padx=4,
+                                                                                    pady=(4, 0))
 
         ef = ttk.LabelFrame(f, text=T('Внешнее устройство (сирена, лампа, реле) — отдельный COM-порт'), padding=6)
         ef.pack(fill='x', pady=8)
@@ -1290,13 +1319,14 @@ class App:
                 d = max(1.0, min(120.0, float(cv['dwell'].get().replace(',', '.'))))
             except ValueError:
                 d = A.SCAN_DWELL_DEFAULT
-            out.append(dict(on=bool(cv['on'].get()), freq=cv['freq'].get().strip(), mode=cv['mode'].get() or 'USB',
-                            dwell=d))
+            out.append(dict(name=cv['name'].get().strip(), on=bool(cv['on'].get()), freq=cv['freq'].get().strip(),
+                            mode=cv['mode'].get() or 'USB', dwell=d))
         return out
 
     def toggle_scan(self):
         if self.core.scan_on:
             self.core.stop_scan()
+            self.update_scan_ui()
             return
         self.apply()
         err = self.core.start_scan()
@@ -1304,10 +1334,83 @@ class App:
             self.mb.showwarning(T('Сканирование'), err)
         self.update_scan_ui()
 
+    def refresh_channel_buttons(self):
+        for i, b in enumerate(getattr(self, 'chan_btns', [])):
+            t = A.channel_caption(self.core.s['scan_channels'][i], i)
+            if b.cget('text') != t:
+                b.configure(text=t)
+
+    def on_channel(self, i):
+        self.pull()
+        err = self.core.tune_channel(i)
+        if err:
+            self.mb.showwarning(T('Канал'), err)
+        self.update_scan_ui()
+
+    def rename_channel(self, i):
+        from tkinter import simpledialog
+        ch = self.core.s['scan_channels'][i]
+        new = simpledialog.askstring(T('Канал'), T('Подпись кнопки канала %d (%s %s):') % (
+            i + 1, ch.get('freq', ''), ch.get('mode', '')), initialvalue=ch.get('name', ''), parent=self.root)
+        if new is None:
+            return 'break'
+        ch['name'] = new.strip()
+        if getattr(self, 'scan_vars', None):
+            self.scan_vars[i]['name'].set(ch['name'])
+        self.core.save()
+        self.refresh_channel_buttons()
+        return 'break'
+
+    def toggle_hfp(self):
+        self.core.set_hfp_decoder(bool(self.var['hfp_enable'].get()))
+        self.core.save()
+        self.add('[%s] • %s' % (self.now(), T('Декодер HFPager включён') if self.core.s['hfp_enable'] else
+                                T('Декодер HFPager выключен')), 'sys')
+        self.update_decoder_buttons()
+
+    def toggle_sel(self):
+        self.restart_rx()                       # pull() takes sel_enable from the same variable
+        self.add('[%s] • %s' % (self.now(), T('Декодер Selcall включён') if self.core.s['sel_enable'] else
+                                T('Декодер Selcall выключен')), 'sys')
+        self.update_decoder_buttons()
+
+    def update_decoder_buttons(self):
+        try:
+            self.tb_hfp.configure(text=('HFPager ' + (T('ВКЛ') if self.var['hfp_enable'].get() else T('ВЫКЛ'))))
+            self.tb_sel.configure(text=('Selcall ' + (T('ВКЛ') if self.var['sel_enable'].get() else T('ВЫКЛ'))))
+        except Exception:
+            pass
+
+    def update_scan_calc(self):
+        c = self.core
+        n = len(c.scan_list())
+        if n < 2:
+            self.var['scan_calc'].set(T('Отмечено каналов: %d (нужно от 2 до 6)') % n)
+            return
+        self.var['scan_calc'].set(
+            T('Каналов %d, цикл %.1f с, перестройка %.2f с%s. Вызывающему нужно: преамбула HFPager ≥ %.1f с, '
+              'точки Selcall ≥ %.1f с. Стандартных 6 с точек CODAN хватает на %d кан.') % (
+                n, c.scan_cycle_seconds(), c.scan_retune_seconds(),
+                '' if c.scan_retune is not None else T(' (оценка, измерится при сканировании)'),
+                c.preamble_for_scan(), c.dots_for_scan(), c.max_channels_for(6.0, A.SEL_DOTS_MARGIN)))
+
     def update_scan_ui(self):
         c = self.core
         try:
             self.btn_scan.configure(text=T('Остановить сканирование') if c.scan_on else T('Начать сканирование'))
+            if bool(self.var['scan_btn'].get()) != c.scan_on:
+                self.var['scan_btn'].set(c.scan_on)
+            ch_ = c.s['scan_channels'][c.scan_ch] if (c.scan_on and c.scan_ch is not None) else None
+            want = c.cur_channel if c.cur_channel is not None else -1
+            if self.var['chan_sel'].get() != want:
+                self.var['chan_sel'].set(want)
+            self.tb_scan.configure(text=(T('СКАН') + (' %d' % (c.scan_ch + 1) if ch_ else '') +
+                                         (' ■' if c.scan_state == 'hold' else '')) if c.scan_on else T('СКАН'))
+        except Exception:
+            pass
+        try:
+            self.pull_scan_only()
+            self.update_scan_calc()
         except Exception:
             pass
         if not c.scan_on or c.scan_ch is None:
@@ -1315,7 +1418,8 @@ class App:
             return
         ch = c.s['scan_channels'][c.scan_ch]
         what = T('СТОП на канале') if c.scan_state == 'hold' else T('скан')
-        self.var['scan_info'].set('%s %d: %s %s' % (what, c.scan_ch + 1, ch['freq'], ch.get('mode')))
+        self.var['scan_info'].set('%s %d «%s»: %s %s' % (what, c.scan_ch + 1, A.channel_caption(ch, c.scan_ch),
+                                                         ch['freq'], ch.get('mode')))
 
     def update_pre_info(self):
         try:
@@ -1337,9 +1441,15 @@ class App:
         self.var['hfp_pre_seconds'].set('%g' % v)
         self.var['sel_dot_seconds'].set('%g' % d)
         self.apply()
-        self.add('[%s] • %s' % (self.now(), T('Цикл сканирования %.1f с: преамбула HFPager %.1f с (цикл + 2,5 с), '
-                                              'точки Selcall %.1f с (цикл + 1 с, не меньше 6 с)') % (
-            self.core.scan_cycle_seconds(), v, d)), 'sys')
+        self.add('[%s] • %s' % (self.now(), T('Сканирование %d каналов: преамбула HFPager %.1f с, точки Selcall '
+                                              '%.1f с (обход остальных каналов + 2,3 с / + 0,6 с)') % (
+            len(self.core.scan_list()), v, d)), 'sys')
+        self.update_scan_calc()
+
+    def pull_scan_only(self):
+        if getattr(self, 'scan_vars', None):
+            self.core.s['scan_channels'] = self.scan_from_vars()
+        self.refresh_channel_buttons()
 
     def beacon_now(self):
         self.apply()
@@ -1441,7 +1551,7 @@ class App:
         num('ptt_delay', 0.0, 5.0)
         num('sens_db', 1.0, 20.0)
         s['tx_level'] = float(v['tx_level'].get())
-        for k in ('afc', 'ack', 'auto_ack', 'only_mine', 'ptt_invert', 'sel_enable', 'sel_translit', 'sel_afc',
+        for k in ('afc', 'ack', 'auto_ack', 'only_mine', 'ptt_invert', 'sel_enable', 'hfp_enable', 'sel_translit', 'sel_afc',
                   'sel_ring', 'sel_ring_air', 'sel_ext_enabled', 'sel_ext_invert', 'sel_listen_after_call',
                   'sel_listen_after_tx'):
             s[k] = bool(v[k].get())
@@ -2326,6 +2436,8 @@ class App:
                 self._last_sec = int(t)
                 self.tick_clock()
                 self.update_beacon_info()
+                self.pull_scan_only()
+                self.update_scan_calc()
         except Exception:
             pass
         self.root.after(100, self.poll)
@@ -2339,7 +2451,11 @@ class App:
             except Exception:
                 pass
             core.save()
-            core.stop_scan()
+            if core.scan_on:                     # stop and give the transceiver its frequency back first
+                core.stop_scan()
+                th = core._scan_thread
+                if th is not None:
+                    th.join(5.0)
             core.stop_rx()
             core.ringer.stop()
             core.listener.stop()

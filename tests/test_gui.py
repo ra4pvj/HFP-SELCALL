@@ -154,6 +154,46 @@ def main():
     assert not core.scan_on and app.var['scan_info'].get() == ''
     core.s['hfp_pre_seconds'] = 0.0
     app.var['hfp_pre_seconds'].set('0')
+    # main-page buttons: SCAN, HFPager / Selcall decoders
+    app.var['scan_btn'].set(True)
+    app.toggle_scan()
+    time.sleep(0.5)
+    assert core.scan_on
+    app.var['scan_btn'].set(False)
+    app.toggle_scan()
+    t0 = time.time()
+    while core.scan_on and time.time() - t0 < 6:
+        time.sleep(0.1)
+    app.poll()
+    assert not core.scan_on and not app.var['scan_btn'].get()
+    app.var['hfp_enable'].set(False)
+    app.toggle_hfp()
+    assert core.s['hfp_enable'] is False and core.engine.speeds == ()
+    app.var['hfp_enable'].set(True)
+    app.toggle_hfp()
+    assert core.engine.speeds
+    app.var['sel_enable'].set(False)
+    app.toggle_sel()
+    assert core.sel is None and core.stream is not None
+    app.var['sel_enable'].set(True)
+    app.toggle_sel()
+    assert core.sel is not None
+    app.update_scan_calc()
+    assert app.var['scan_calc'].get()
+    # channel buttons: caption from the table, rename by right click, press = tune
+    import tkinter.simpledialog as sdlg
+    assert len(app.chan_btns) == 6 and app.chan_btns[1].cget('text') == '40m'
+    sdlg.ANSWER[0] = 'ДОМ'
+    app.rename_channel(1)
+    assert core.s['scan_channels'][1]['name'] == 'ДОМ' and app.chan_btns[1].cget('text') == 'ДОМ'
+    assert app.scan_vars[1]['name'].get() == 'ДОМ'
+    app.var['chan_sel'].set(1)
+    app.on_channel(1)
+    t0 = time.time()
+    while core.cur_channel != 1 and time.time() - t0 < 5:
+        time.sleep(0.05)
+    app.poll()
+    assert core.cur_channel == 1 and app.var['chan_sel'].get() == 1
 
     # level meter / clocks
     core.peak_max = 0.5
@@ -193,7 +233,7 @@ def main():
     log = open(A.LOG_FILE, encoding='utf-8').read()
     assert 'UI ERROR' not in log, log[log.find('UI ERROR') - 200:][:3000]
     print('OK  GUI: built, events handled, limits marked, Selcall and HFPager call banners/answers, macros, '
-          'beacon (CW), preamble for scanning, scan start/stop, meter/overload, «Выключено» ports, scenarios, help, RU/EN and light/dark rebuild — '
+          'beacon (CW), preamble for scanning, scan start/stop, main-page SCAN, decoder and 6 channel buttons (rename), meter/overload, «Выключено» ports, scenarios, help, RU/EN and light/dark rebuild — '
           'no UI errors')
 
 

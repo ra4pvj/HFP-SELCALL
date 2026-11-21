@@ -367,11 +367,14 @@ def test_stage3(tmp):
     # scanner with a fake CAT
     tuned = []
     core.rig.run_actions = lambda cfg, act: (tuned.append((time.time(), act)), [(act, True, 'ok')])[1]
+    core.rig.read_freq = lambda cfg: 7185000
     core.s.update(rig_port='COM9', scan_resume=2.0, scan_channels=[
         dict(on=True, freq='7.100', mode='LSB', dwell=1.0), dict(on=False, freq='9.000', mode='USB', dwell=1.0),
         dict(on=True, freq='10.140', mode='USB', dwell=1.0), dict(on=True, freq='14.100', mode='USB', dwell=1.0)] +
         [dict(on=False, freq='', mode='USB', dwell=3.0)] * 4)
-    assert core.preamble_for_scan() == 5.5 and core.dots_for_scan() == 6.0
+    # 3 channels of 1 s, retune not measured yet (0.2 s): back after 2 x 1.2 s -> preamble 2.4 + 2.3, dots >= 6
+    assert core.preamble_for_scan() == 4.7 and core.dots_for_scan() == 6.0, (core.preamble_for_scan(),
+                                                                           core.dots_for_scan())
     core.last_activity = 0.0
     assert core.start_scan() is None
     t0 = time.time()
@@ -404,6 +407,12 @@ def test_stage3(tmp):
     while core.scan_state != 'off' and time.time() - t0 < 8:
         time.sleep(0.05)
     assert core.scan_state == 'off'
+    assert tuned[-1][1] == 'FRQ 7.18500', tuned[-1]           # back where the transceiver was before the scan
+    assert core.scan_retune is not None and core.scan_retune < 0.1
+    core.s['scan_channels'] = [dict(on=True, freq='7.1', mode='USB', dwell=1.0)] * 6 + \
+        [dict(on=False, freq='', mode='USB', dwell=1.0)] * 2
+    assert core.max_channels_for(6.0, A.SEL_DOTS_MARGIN) == 6 and core.dots_for_scan() == 6.0
+    core.s['scan_channels'] = core.s['scan_channels'][:4] + [dict(on=False, freq='', mode='USB', dwell=3.0)] * 4
     for c in core.s['scan_channels'][:4]:
         c['dwell'] = 1.0
     assert core.start_scan() is None
@@ -412,8 +421,63 @@ def test_stage3(tmp):
     while core.scan_on and time.time() - t0 < 8:
         time.sleep(0.05)
     assert not core.scan_on, 'fewer than 2 channels must stop the scan'
-    print('OK  scanning: skips unticked channels, holds on activity, resumes after %.0f s of silence, stops'
-          % core.s['scan_resume'])
+    print('OK  scanning: skips unticked channels, holds on activity, resumes after %.0f s of silence, stops and '
+          'returns to 7.185 MHz; 6 channels of 1 s fit the CODAN 6 s dots' % core.s['scan_resume'])
+
+    # channel buttons: tune channel i (stops the scan, no return), captions; 8 saved channels -> 6
+    core.s['scan_channels'] = A.default_scan_channels()
+    assert len(core.s['scan_channels']) == 6 and A.channel_caption(core.s['scan_channels'][1], 1) == '40m'
+    assert A.channel_caption(dict(name='', freq='7.1'), 0) == '7.1' and A.channel_caption({}, 2) == '3'
+    tuned.clear()
+    assert core.tune_channel(2) is None
+    t0 = time.time()
+    while not tuned and time.time() - t0 < 5:
+        time.sleep(0.05)
+    time.sleep(0.2)
+    assert tuned[-1][1] == 'FRQ 10.140 USB' and core.cur_channel == 2, (tuned, core.cur_channel)
+    assert core.start_scan() is None
+    time.sleep(0.3)
+    tuned.clear()
+    assert core.tune_channel(4) is None               # pressed during the scan: stop there, no return home
+    t0 = time.time()
+    while core.scan_on or (time.time() - t0 < 1.5 and not any('18.100' in a for _t, a in tuned)):
+        time.sleep(0.05)
+    assert tuned[-1][1] == 'FRQ 18.100 USB' and not any('7.18500' in a for _t, a in tuned), tuned
+    core.save()
+    import json
+    cfg = json.load(open(A.SETTINGS_FILE, encoding='utf-8'))
+    cfg['scan_channels'] = cfg['scan_channels'] + [dict(on=False, freq='', mode='USB', dwell=1.0)] * 2
+    json.dump(cfg, open(A.SETTINGS_FILE, 'w', encoding='utf-8'))
+    c2 = A.Core(queue.Queue(), sd_module=FakeSD)
+    assert len(c2.s['scan_channels']) == 6 and c2.s['scan_channels'][4]['freq'] == '18.100'
+    cfg['hfp_enable'] = cfg['sel_enable'] = False
+    json.dump(cfg, open(A.SETTINGS_FILE, 'w', encoding='utf-8'))
+    c3 = A.Core(queue.Queue(), sd_module=FakeSD)
+    assert c3.s['hfp_enable'] is True and c3.s['sel_enable'] is True, 'decoders must be on at start'
+    print('OK  channel buttons: tune / stop scan without return; captions; 8 saved channels -> 6 kept; '
+          'decoders on at every start')
+
+    # HFPager decoder off: the signal is seen (activity / spectrum) but nothing is decoded and no failure reported
+    core.s.update(speed='23.44', hfp_pre_seconds=0.0)
+    assert core.start_rx()
+    core.sel.stop()
+    core.set_hfp_decoder(False)
+    FakeSD.played.clear()
+    assert core.send(3, 'OFF TEST') is None
+    core._tx_thread.join(60)
+    audio, _ = FakeSD.played[-1]
+    gap = np.zeros(3 * fs, np.float32)
+    drain(q, 0.2)
+    core.last_activity = 0.0
+    push(core, np.concatenate([gap, audio, gap, gap]), fs)
+    items = drain(q, 5.0)
+    core.stop_rx()
+    assert not [i for i in items if i[0] == 'rx'], 'decoder off must not decode'
+    assert not [i for i in items if i[0] == 'event' and i[1] == 'fail']
+    assert core.last_activity > 0, 'the signal must still count as activity (scanner)'
+    core.set_hfp_decoder(True)
+    core.save()
+    print('OK  HFPager decoder off: signal seen, nothing decoded')
 
 
 def test_scan_timing():
