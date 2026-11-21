@@ -833,8 +833,4 @@ EN = {
         'Transmission: %s — retrying',
     'Запрос %s от ID %d с запросом подтверждения — отвечаю подтверждением':
         '%s request from ID %d with an acknowledgement request — answering with the acknowledgement',
-    'Мой ID: %s':
-        'My ID: %s',
-    'Мой Selcall ID: %s':
-        'My Selcall ID: %s',
 }

@@ -274,7 +274,7 @@ def main():
     # own IDs in the right corners of the HFPager / Selcall fields follow the settings
     app.var['my_id'].set('4321')
     app.var['sel_my_id'].set('2468')
-    assert app.own_id_vars['my_id'].get() == 'Мой ID: 4321' and app.own_id_vars['sel_my_id'].get() == 'Мой Selcall ID: 2468'
+    assert app.own_id_vars['my_id'].get() == 'ID: 4321' and app.own_id_vars['sel_my_id'].get() == 'Selcall ID: 2468'
     # the dark theme is gone: a saved 'dark' loads as light
     core.s['theme'] = 'dark'
     core.save()

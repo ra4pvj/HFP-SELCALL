@@ -967,8 +967,7 @@ class App:
         ttk.Label(r, text=T('Бод')).pack(side='left', padx=(2, 8))
         ttk.Checkbutton(r, text=T('Запрос подтверждения'), variable=self.var['ack']).pack(side='left')
         # own IDs in the right corner of each field
-        ttk.Label(r, textvariable=self.own_id_var('my_id', T('Мой ID: %s')),
-                  foreground=self.colors()['dim']).pack(side='right')
+        ttk.Label(r, textvariable=self.own_id_var('my_id', 'ID: %s')).pack(side='right')
         self.msg = LimitedText(tk, h, 252, cost_hfp, on_change=self.update_counter, on_enter=self.on_send,
                                width=30, font=font, colors=colors)
         self.msg.w.configure(height=3)
@@ -987,8 +986,7 @@ class App:
         s.grid(row=0, column=1, sticky='nsew', padx=(4, 0))
         r = ttk.Frame(s)
         r.pack(fill='x')
-        ttk.Label(r, textvariable=self.own_id_var('sel_my_id', T('Мой Selcall ID: %s')),
-                  foreground=self.colors()['dim']).pack(side='right')
+        ttk.Label(r, textvariable=self.own_id_var('sel_my_id', 'Selcall ID: %s')).pack(side='right')
         ttk.Label(r, text=T('Кому (Selcall ID):')).pack(side='left')
         ttk.Entry(r, textvariable=self.var['sel_to_id'], width=7, font=font).pack(side='left', padx=(4, 10))
         ttk.Checkbutton(r, text=T('Транслит'), variable=self.var['sel_translit'],
