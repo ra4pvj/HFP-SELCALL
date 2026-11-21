@@ -419,8 +419,9 @@ class App:
         self.build_rig_tab()
         self.build_beacon_tab()
         self.build_program_tab()
+        # the program always starts on «Чат и сообщения», whatever tab was open when it was closed
         try:
-            self.nb.select(self.tab_outer[int(core.s.get('tab', 0))])
+            self.nb.select(self.tab_outer[0])
         except Exception:
             pass
         self.refresh_devices()
@@ -643,6 +644,10 @@ class App:
         self.tb_sel = ttk.Checkbutton(dec, text='Selcall', style='Toolbutton', variable=self.var['sel_enable'],
                                       command=self.toggle_sel, width=13)
         self.tb_sel.pack(fill='x')
+        # «Слушать» — the same listening as on the HF Selcall and HFPager tabs (one state, three buttons)
+        self.btn_listen_main = ttk.Button(dec, text=T('Слушать'), width=13, command=self.core.toggle_listen)
+        self.btn_listen_main.pack(fill='x', pady=(6, 0))
+        self.listen_btns = [self.btn_listen_main]
         self.update_decoder_buttons()
         self.mon_bar, self.mon_fixed = bar, (lamp_fr, meter, clk, dec)
         bar.bind('<Configure>', lambda e: self.fit_monitor())
@@ -1101,6 +1106,9 @@ class App:
         ttk.Checkbutton(r, text=T('Слушать эфир после вызова, с:'),
                         variable=self.var['hfp_listen_after_call']).pack(side='left', padx=4)
         ttk.Entry(r, textvariable=self.var['hfp_listen_seconds'], width=5).pack(side='left')
+        self.btn_listen_hfp = ttk.Button(r, text=T('Слушать'), width=12, command=self.core.toggle_listen)
+        self.btn_listen_hfp.pack(side='left', padx=10)
+        self.listen_btns.append(self.btn_listen_hfp)
         ttk.Checkbutton(r, text=T('Включать внешнее устройство при вызове'),
                         variable=self.var['hfp_ext_enabled']).pack(side='left', padx=(16, 4))
         r = ttk.Frame(g)
@@ -1172,6 +1180,7 @@ class App:
         ttk.Entry(r, textvariable=self.var['sel_listen_after_tx_seconds'], width=5).pack(side='left')
         self.btn_listen = ttk.Button(r, text=T('Слушать'), width=12, command=self.core.toggle_listen)
         self.btn_listen.pack(side='left', padx=10)
+        self.listen_btns.append(self.btn_listen)
         r = ttk.Frame(g)
         r.pack(fill='x', pady=(4, 0))
         ttk.Checkbutton(r, text=T('Включать внешнее устройство (настройка — на вкладке «Трансивер и аудио»)'),
@@ -1980,9 +1989,11 @@ class App:
     def update_sel_buttons(self):
         core = self.core
         if core.listener.active:
-            self.btn_listen.configure(text=T('Слушаю ■') if core.listen_manual else T('Слушаю…'))
+            txt = T('Слушаю ■') if core.listen_manual else T('Слушаю…')
         else:
-            self.btn_listen.configure(text=T('Слушать'))
+            txt = T('Слушать')
+        for b in getattr(self, 'listen_btns', [self.btn_listen]):
+            b.configure(text=txt)
         self.btn_ext.configure(text=T('Внешн. ВКЛ') if core.ext.on else T('Внешн.'))
 
     # ------------------------------------------------------------------ PTT / CAT actions

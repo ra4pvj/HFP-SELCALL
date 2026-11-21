@@ -180,6 +180,17 @@ def main():
     assert core.sel is not None
     app.update_scan_calc()
     assert app.var['scan_calc'].get()
+    # always starts on the chat tab; three «Слушать» buttons (main page, HFPager, Selcall) show one state
+    assert app.nb.cur == 0
+    assert len(app.listen_btns) == 3 and app.btn_listen in app.listen_btns
+    real_listener = core.listener
+    core.listener = type('L', (), {'active': True})()
+    core.listen_manual = True
+    app.update_sel_buttons()
+    assert all(b.cget('text') == 'Слушаю ■' for b in app.listen_btns)
+    core.listener, core.listen_manual = real_listener, False
+    app.update_sel_buttons()
+    assert len({b.cget('text') for b in app.listen_btns}) == 1
     # channel buttons: caption from the table, rename by right click, press = tune
     import tkinter.simpledialog as sdlg
     assert len(app.chan_btns) == 6 and app.chan_btns[1].cget('text') == '40m'
