@@ -13,8 +13,8 @@ EN = {
         'ID must be in the range 0…65535.',
     'Частота нулевого тона должна быть в диапазоне 300…2000 Гц.':
         'Tone 0 frequency must be in the range 300…2000 Hz.',
-    'Длительность точек (фазирования) должна быть 0.5…20 с.':
-        'Dot (phasing) duration must be 0.5…20 s.',
+    'Длительность преамбулы Selcall должна быть 0.5…20 с.':
+        'Selcall preamble duration must be 0.5…20 s.',
     'Приём запущен (%d Гц). HFPager: все скорости, АПЧ %s.  Selcall: %s.':
         'Reception started (%d Hz). HFPager: all speeds, AFC %s.  Selcall: %s.',
     'СООБЩЕНИЕ':
@@ -345,8 +345,8 @@ EN = {
         'Selcall reception',
     'Мой Selcall ID:':
         'My Selcall ID:',
-    'Точки (фазирование), с:':
-        'Dots (phasing), s:',
+    'Преамбула, с (по умолчанию 6):':
+        'Preamble, s (default 6):',
     'центр без АПЧ, Гц:':
         'centre without AFC, Hz:',
     'длительность, с:':

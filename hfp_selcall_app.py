@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta15'
+APP_VERSION = '0.3.0-beta16'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -81,7 +81,8 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 # ---- HFPager call / ring / answer (stage 2 of 0.3), same as for Selcall
                 call_text='CALL', hfp_ring=True, hfp_ring_style='codan', hfp_ring_seconds=30.0,
                 hfp_msg_sound=True, hfp_msg_style='beep', hfp_ring_air=True, hfp_answer_style='kalinka',
-                hfp_listen_after_call=True, hfp_listen_seconds=60.0, hfp_ext_enabled=False,
+                hfp_listen_after_call=True, hfp_listen_seconds=60.0,
+                hfp_listen_after_tx=True, hfp_listen_after_tx_seconds=60.0, hfp_ext_enabled=False,
                 # answer with a melody on air to the message "BCN REQ" addressed to my ID (not to ID 0)
                 bcn_req_enable=True, bcn_req_text='BCN REQ', bcn_req_style='kalinka',
                 # message / call macros: 10 buttons under the chat
@@ -1234,6 +1235,9 @@ class Core:
         self.save()
         self.last_tx_error = None
         self.tx_busy = True
+        # then listen: to hear the station's reply (not after a beacon frame — it is sent to nobody)
+        if not beacon and self.s.get('hfp_listen_after_tx', True):
+            self.listen_pending = float(self.s.get('hfp_listen_after_tx_seconds') or 60)
         self.q.put(('tx_start', my, to, counter, text, speed, len(audio) / self.fs))
         self._tx_thread = threading.Thread(target=self._tx_run, args=(audio, out), daemon=True)
         self._tx_thread.start()
@@ -1254,7 +1258,7 @@ class Core:
             return T('Введите текст сообщения (до %d символов).') % SE.MAX_MSG
         dots = float(self.s['sel_dot_seconds'])
         if not (0.5 <= dots <= 20):
-            return T('Длительность точек (фазирования) должна быть 0.5…20 с.')
+            return T('Длительность преамбулы Selcall должна быть 0.5…20 с.')
         me, to = SE.digits(self.s['sel_my_id']), SE.digits(to_id)
         text, audio = SE.build_audio(to, me, message, self.fs, dot_seconds=dots,
                                      level=float(self.s['tx_level']), lead=float(self.s['ptt_delay']),

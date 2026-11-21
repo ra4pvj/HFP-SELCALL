@@ -33,7 +33,7 @@ HF Selcall: «Кому (Selcall ID)»; «Вызов» — вызов без те
 ## Входящий вызов Selcall
 Над вкладками появляется жёлтая панель «☎ … от NNNN» с кнопками «Ответить» (подставляет отправителя в поле Selcall «Кому» под чатом) и «Сбросить». Звучит звонок (тип, длительность и устройство — на вкладке «HF Selcall»).
 Ответ в эфир: через 1 с программа один раз передаёт сигнал ответа (по умолчанию мелодия), чтобы вызывающий слышал, что вызов принят. Это автоматическая передача — выключите, если она не нужна.
-Прослушивание: после вызова (и после своей передачи) звук входа идёт в динамик заданное время, чтобы услышать голосовое сообщение или ответ станции. Кнопка «Слушать» включает прослушивание вручную.
+Прослушивание: после вызова (и после своей передачи) звук входа идёт в динамик заданное время, чтобы услышать голосовое сообщение или ответ станции. Кнопка «Слушать» включает прослушивание вручную; такая же кнопка есть на вкладке «HFPager» и на главной странице под кнопками декодеров — все три работают одинаково. Прослушивание после своей передачи настраивается отдельно для Selcall и для HFPager (после кадра маяка HFPager прослушивание не включается). Длина преамбулы (точек) Selcall задаётся на вкладке «HF Selcall», по умолчанию 6 с.
 
 ## Трансивер (CAT) и сценарии
 На вкладке «Трансивер и аудио» можно установить частоту и режим, выбрать диапазон, перестроиться шагом. «Сценарии…» — таблица действий при получении сообщения HFPager на ваш ID (например, «QSY 7.120» → перестроить трансивер).
@@ -117,7 +117,7 @@ HF Selcall: "To (Selcall ID)"; "Call" — a call without text, "Message" — a c
 ## Incoming Selcall
 A yellow bar "☎ … from NNNN" appears above the tabs with "Answer" (fills in the sender in the Selcall "To" field under the chat) and "Dismiss". The ring sounds (type, duration and device are on the "HF Selcall" tab).
 Answer on air: after 1 s the program transmits the answer signal once (a melody by default) so the caller hears that the call was received. This is an automatic transmission — switch it off if you do not want it.
-Listening: after a call (and after your own transmission) the input audio goes to the loudspeaker for the set time, to hear a voice message or the station's reply. "Listen" switches it on manually.
+Listening: after a call (and after your own transmission) the input audio goes to the loudspeaker for the set time, to hear a voice message or the station's reply. "Listen" switches it on manually; the same button is on the «HFPager» tab and on the main page under the decoder buttons — all three work alike. Listening after your own transmission is set separately for Selcall and HFPager (it does not start after an HFPager beacon frame). The Selcall preamble (dots) length is set on the «HF Selcall» tab, default 6 s.
 
 ## Transceiver (CAT) and scenarios
 On the "Transceiver & audio" tab you can set frequency and mode, choose a band and tune in steps. "Scenarios…" — a table of actions on an HFPager message to your ID (e.g. "QSY 7.120" → retune the transceiver).

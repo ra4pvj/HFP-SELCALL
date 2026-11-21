@@ -247,6 +247,16 @@ def test_answer_listen_ext(tmp):
     assert core.listener.active and core.listen_manual
     core.toggle_listen()
     assert not core.listener.active
+    # HFPager message → listening to the station's reply; a beacon frame → no listening
+    core.s.update(hfp_listen_after_tx=True, hfp_listen_after_tx_seconds=33)
+    assert core.send(5, 'REPLY?') is None
+    core._tx_thread.join(30)
+    assert core.listener.active and core.listen_timer is not None, 'listening must start after an HFPager TX'
+    core.toggle_listen()
+    assert not core.listener.active
+    assert core.send_hfp_beacon('BCN') is None
+    core._tx_thread.join(30)
+    assert not core.listener.active, 'no listening after a beacon frame'
     core.stop_rx()
     print('OK  answer on air: Kalinka once (%.2f s with PTT delay/tail) → then listening; manual «Слушать»'
           % (len(audio) / fs))
@@ -344,7 +354,8 @@ def test_stage2(tmp):
 def test_stage3(tmp):
     """long HFPager preamble on TX, decoding when only the end of it is heard (scanning), the scanner"""
     core, q = make_core(tmp)
-    core.s.update(speed='23.44', hfp_pre_seconds=12.0, ptt_delay=0.0)
+    # no listening after this TX: listening holds the scanner on its channel (tested below)
+    core.s.update(speed='23.44', hfp_pre_seconds=12.0, ptt_delay=0.0, hfp_listen_after_tx=False)
     assert core.start_rx()
     core.sel.stop()
     fs = core.fs

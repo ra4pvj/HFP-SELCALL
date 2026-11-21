@@ -180,6 +180,11 @@ def main():
     assert core.sel is not None
     app.update_scan_calc()
     assert app.var['scan_calc'].get()
+    # HFPager: listening after own transmission (setting saved)
+    assert 'hfp_listen_after_tx' in app.var and 'hfp_listen_after_tx_seconds' in app.var
+    app.var['hfp_listen_after_tx_seconds'].set('45')
+    app.apply()
+    assert core.s['hfp_listen_after_tx'] is True and core.s['hfp_listen_after_tx_seconds'] == 45
     # always starts on the chat tab; three «Слушать» buttons (main page, HFPager, Selcall) show one state
     assert app.nb.cur == 0
     assert len(app.listen_btns) == 3 and app.btn_listen in app.listen_btns

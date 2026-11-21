@@ -481,6 +481,8 @@ class App:
             hfp_ring_air=bv('hfp_ring_air'),
             hfp_answer_style=tk.StringVar(value=T(styles.get(s['hfp_answer_style'], SE.RING_STYLES[-1][1]))),
             hfp_listen_after_call=bv('hfp_listen_after_call'), hfp_listen_seconds=sv('hfp_listen_seconds', '%g'),
+            hfp_listen_after_tx=bv('hfp_listen_after_tx'),
+            hfp_listen_after_tx_seconds=sv('hfp_listen_after_tx_seconds', '%g'),
             hfp_ext_enabled=bv('hfp_ext_enabled'),
             bcn_req_enable=bv('bcn_req_enable'), bcn_req_text=sv('bcn_req_text'),
             bcn_req_style=tk.StringVar(value=T(styles.get(s['bcn_req_style'], SE.RING_STYLES[-1][1]))),
@@ -1106,11 +1108,16 @@ class App:
         ttk.Checkbutton(r, text=T('Слушать эфир после вызова, с:'),
                         variable=self.var['hfp_listen_after_call']).pack(side='left', padx=4)
         ttk.Entry(r, textvariable=self.var['hfp_listen_seconds'], width=5).pack(side='left')
+        ttk.Checkbutton(r, text=T('после своей передачи (ответ станции), с:'),
+                        variable=self.var['hfp_listen_after_tx']).pack(side='left', padx=(12, 4))
+        ttk.Entry(r, textvariable=self.var['hfp_listen_after_tx_seconds'], width=5).pack(side='left')
         self.btn_listen_hfp = ttk.Button(r, text=T('Слушать'), width=12, command=self.core.toggle_listen)
         self.btn_listen_hfp.pack(side='left', padx=10)
         self.listen_btns.append(self.btn_listen_hfp)
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(4, 0))
         ttk.Checkbutton(r, text=T('Включать внешнее устройство при вызове'),
-                        variable=self.var['hfp_ext_enabled']).pack(side='left', padx=(16, 4))
+                        variable=self.var['hfp_ext_enabled']).pack(side='left', padx=4)
         r = ttk.Frame(g)
         r.pack(fill='x', pady=(4, 0))
         ttk.Checkbutton(r, text=T('Отвечать мелодией в эфир на сообщение'), variable=self.var['bcn_req_enable']
@@ -1142,7 +1149,7 @@ class App:
                         command=self.restart_rx).pack(side='left', padx=4)
         ttk.Label(r, text=T('Мой Selcall ID:')).pack(side='left', padx=(12, 4))
         ttk.Entry(r, textvariable=self.var['sel_my_id'], width=8).pack(side='left')
-        ttk.Label(r, text=T('Точки (фазирование), с:')).pack(side='left', padx=(12, 4))
+        ttk.Label(r, text=T('Преамбула, с (по умолчанию 6):')).pack(side='left', padx=(12, 4))
         ttk.Entry(r, textvariable=self.var['sel_dot_seconds'], width=5).pack(side='left')
         r = ttk.Frame(g)
         r.pack(fill='x', pady=(4, 0))
@@ -1732,11 +1739,12 @@ class App:
             self.core.ext_manual = False
         # HFPager call / ring / answer
         s['call_text'] = v['call_text'].get().strip() or 'CALL'
-        for k in ('hfp_ring', 'hfp_msg_sound', 'hfp_ring_air', 'hfp_listen_after_call', 'hfp_ext_enabled',
+        for k in ('hfp_ring', 'hfp_msg_sound', 'hfp_ring_air', 'hfp_listen_after_call', 'hfp_listen_after_tx', 'hfp_ext_enabled',
                   'bcn_req_enable', 'bcn_enable'):
             s[k] = bool(v[k].get())
         num('hfp_ring_seconds', 3.0, 600.0)
         num('hfp_listen_seconds', 5, 600)
+        num('hfp_listen_after_tx_seconds', 5, 600)
         for k in ('hfp_ring_style', 'hfp_msg_style', 'hfp_answer_style', 'bcn_req_style'):
             s[k] = rev.get(v[k].get(), s.get(k, 'kalinka'))
         s['bcn_req_text'] = v['bcn_req_text'].get().strip() or 'BCN REQ'
