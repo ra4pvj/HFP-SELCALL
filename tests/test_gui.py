@@ -273,7 +273,11 @@ def main():
 
     # language and theme: the window is rebuilt, the chat survives
     n_lines = len(app.chat_lines)
+    old_cb = app.cb_bcn_channel
     app.set_lang('en')
+    assert app.cb_bcn_channel is not old_cb and not app.cb_bcn_channel.__dict__.get('_dead')
+    assert old_cb.__dict__.get('_dead'), 'the old widgets must be destroyed by the rebuild'
+    assert app.nb.__dict__.get('_dead') is None and len(app.tab_outer) == 6
     assert i18n.LANG == 'en' and core.s['lang'] == 'en'
     app.set_theme('dark')
     assert len(app.chat_lines) == n_lines

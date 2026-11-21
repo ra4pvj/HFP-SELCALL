@@ -377,8 +377,16 @@ def test_stage3(tmp):
 
     # scanner with a fake CAT
     tuned = []
-    core.rig.run_actions = lambda cfg, act: (tuned.append((time.time(), act)), [(act, True, 'ok')])[1]
-    core.rig.read_freq = lambda cfg: 7185000
+    rig_hz = [7185000]                      # a fake transceiver: its frequency follows the FRQ commands
+
+    def run_actions(cfg, act):
+        tuned.append((time.time(), act))
+        p = act.split()
+        if len(p) >= 2 and p[0] == 'FRQ':
+            rig_hz[0] = int(round(float(p[1]) * 1e6))
+        return [(act, True, 'ok')]
+    core.rig.run_actions = run_actions
+    core.rig.read_freq = lambda cfg: rig_hz[0]
     core.s.update(rig_port='COM9', scan_resume=2.0, scan_channels=[
         dict(on=True, freq='7.100', mode='LSB', dwell=1.0), dict(on=False, freq='9.000', mode='USB', dwell=1.0),
         dict(on=True, freq='10.140', mode='USB', dwell=1.0), dict(on=True, freq='14.100', mode='USB', dwell=1.0)] +

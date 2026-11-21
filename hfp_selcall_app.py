@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta19'
+APP_VERSION = '0.3.0-beta20'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -1065,7 +1065,10 @@ class Core:
             try:
                 th = self._scan_thread
                 if th is not None and th is not threading.current_thread():
-                    th.join(5.0)
+                    try:
+                        th.join(5.0)
+                    except RuntimeError:        # created but not started yet
+                        pass
                 ok = self.run_actions_logged('FRQ %s %s' % (str(ch['freq']).strip(), ch.get('mode') or 'USB'),
                                              T('канал %d «%s»') % (i + 1, channel_caption(ch, i)))
                 if ok:

@@ -383,6 +383,8 @@ class App:
             except Exception:
                 pass
         self.root.configure(menu='')
+        # widgets kept in attributes and filled from several tabs must not point at the destroyed window
+        self.cb_bcn_channel = None
         i18n.set_lang(self.core.s.get('lang', 'ru'))
         self.build()
 
@@ -2654,7 +2656,10 @@ class App:
                 core.stop_scan()
                 th = core._scan_thread
                 if th is not None:
-                    th.join(5.0)
+                    try:
+                        th.join(5.0)
+                    except RuntimeError:
+                        pass
             core.stop_rx()
             core.ringer.stop()
             core.listener.stop()

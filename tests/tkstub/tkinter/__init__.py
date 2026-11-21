@@ -21,6 +21,10 @@ class _Any:
         return ''
 
 
+class TclError(Exception):
+    pass
+
+
 class Misc:
     def __init__(self, master=None, *a, **k):
         self.master = master
@@ -35,11 +39,17 @@ class Misc:
         return _Any()
 
     # configuration
+    def _alive(self):
+        if self.__dict__.get('_dead'):
+            raise TclError('invalid command name ".!destroyed"')    # as real Tk does for a destroyed widget
+
     def configure(self, *a, **k):
+        self._alive()
         self._cfg.update(k)
     config = configure
 
     def cget(self, k):
+        self._alive()
         return self._cfg.get(k, '')
 
     def __setitem__(self, k, v):
@@ -55,7 +65,7 @@ class Misc:
         return tuple(self._state)
 
     def winfo_children(self):
-        return [k for k in self._kids if not getattr(k, '_dead', False)]
+        return [k for k in self._kids if not k.__dict__.get('_dead')]
 
     def destroy(self):
         self._dead = True
