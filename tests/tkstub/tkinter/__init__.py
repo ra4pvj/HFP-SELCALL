@@ -96,6 +96,9 @@ class Misc:
     def winfo_screenheight(self):
         return 900
 
+    def winfo_screenwidth(self):
+        return 1440
+
 
 class Tk(Misc):
     def __init__(self, *a, **k):

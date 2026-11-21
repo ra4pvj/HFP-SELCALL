@@ -39,7 +39,8 @@ TIME_ZONES = [('LOCAL', None, None)] + [
 LAMP = {'rx_on': '#33ff33', 'rx_off': '#0b3a0b', 'rx_dec': '#ffcc00', 'tx_on': '#ff2a2a', 'tx_off': '#4a0b0b'}
 DARK = dict(bg='#1e1f22', fg='#e3e3e3', field='#2b2d31', sel='#3d5a80', dim='#9aa0a6', border='#3a3c42',
             button='#33363c', active='#41454c', tab='#2b2d31', tab_sel='#1e1f22')
-METER_W, METER_H = 230, 16
+METER_W, METER_H = 200, 16
+WF_BINS = 270                    # spectrum rows from the receiver: 300..3000 Hz in 10 Hz bins
 OVER_DB = 20 * np.log10(A.CLIP_LEVEL)      # -0.18 dBFS
 
 
@@ -559,10 +560,15 @@ class App:
     # ------------------------------------------------------------------ monitor strip (always visible)
     def build_monitor(self):
         tk, ttk = self.tk, self.ttk
-        mon = ttk.Frame(self.root)
-        mon.pack(side='top', fill='x', padx=8, pady=(6, 2))
+        # one group centred in the window, equal gaps between its parts:
+        # lamps · level meter · spectrum · clocks · decoder buttons
+        bar = ttk.Frame(self.root)
+        bar.pack(side='top', fill='x', pady=(8, 2))
+        mon = ttk.Frame(bar)
+        mon.pack(side='top')                  # packed without fill: centred, free space split left / right
+        GAP = 10
         lamp_fr = ttk.Frame(mon)
-        lamp_fr.pack(side='left', padx=(0, 8))
+        lamp_fr.pack(side='left', padx=GAP)
 
         def make_lamp(col, label, off):
             c = tk.Canvas(lamp_fr, width=34, height=34, highlightthickness=0,
@@ -575,7 +581,7 @@ class App:
         self.tx_lamp = make_lamp(1, 'TX', LAMP['tx_off'])
 
         meter = ttk.Frame(mon)
-        meter.pack(side='left', padx=8)
+        meter.pack(side='left', padx=GAP)
         ttk.Label(meter, text=T('Уровень входа (пик), dBFS')).pack(anchor='w')
         self.meter = tk.Canvas(meter, width=METER_W, height=METER_H + 12, highlightthickness=0,
                                background=self.colors()['bg'] or self.root_bg_default)
@@ -595,42 +601,41 @@ class App:
         ttk.Label(row, textvariable=self.var['level_txt'], width=11).pack(side='left')
         ttk.Label(row, textvariable=self.var['clip'], foreground='#e02020').pack(side='left')
 
-        # spectrum (waterfall) 300..3000 Hz, newest line on top
-        WF_W, WF_H, ZOOM = 270, 50, 2
+        # spectrum (waterfall) 300..3000 Hz, newest line on top: 270 bins of 10 Hz drawn WF_W pixels wide
+        WF_W, WF_H, ZOOM = 360, 50, 2
         self.WF = (WF_W, WF_H, ZOOM)
-        if self.wf is None:
+        if self.wf is None or self.wf.shape != (WF_H, WF_W):
             self.wf = np.full((WF_H, WF_W), -120.0, dtype=np.float32)
         _pos = [0.0, 0.25, 0.55, 0.8, 1.0]
         _lx = np.linspace(0, 1, 256)
         self.lut = np.stack([np.interp(_lx, _pos, c) for c in
                              ([0, 0, 40, 255, 255], [0, 50, 230, 255, 255], [0, 0, 40, 60, 200])],
                             axis=1).astype(np.uint8)
-        dec = ttk.Frame(mon)
-        dec.pack(side='right', padx=(8, 0))
-        ttk.Label(dec, text=T('Декодеры')).pack(anchor='w')
-        self.tb_hfp = ttk.Checkbutton(dec, text='HFPager', style='Toolbutton', variable=self.var['hfp_enable'],
-                                      command=self.toggle_hfp, width=13)
-        self.tb_hfp.pack(fill='x', pady=(2, 2))
-        self.tb_sel = ttk.Checkbutton(dec, text='Selcall', style='Toolbutton', variable=self.var['sel_enable'],
-                                      command=self.toggle_sel, width=13)
-        self.tb_sel.pack(fill='x', pady=(2, 0))
-        self.update_decoder_buttons()
-        clk = ttk.Frame(mon)
-        clk.pack(side='right', padx=(10, 0))
         wf_box = ttk.Frame(mon)
-        wf_box.pack(side='left', padx=8)
-        self.wf_canvas = tk.Canvas(wf_box, width=WF_W * ZOOM, height=WF_H * ZOOM, background='black',
+        wf_box.pack(side='left', padx=GAP)
+        self.wf_canvas = tk.Canvas(wf_box, width=WF_W, height=WF_H * ZOOM, background='black',
                                    highlightthickness=1, highlightbackground='#333333')
         self.wf_canvas.pack()
         self.wf_item = self.wf_canvas.create_image(0, 0, anchor='nw')
-        axis = tk.Canvas(wf_box, width=WF_W * ZOOM, height=14, highlightthickness=0,
+        axis = tk.Canvas(wf_box, width=WF_W, height=14, highlightthickness=0,
                          background=self.colors()['bg'] or self.root_bg_default)
         axis.pack()
         for f_hz in (500, 1000, 1500, 2000, 2500, 3000):
-            xx = (f_hz - 300) / 10 * ZOOM
+            xx = (f_hz - 300) / 2700.0 * WF_W
             axis.create_line(xx, 0, xx, 4, fill=self.colors()['dim'])
-            axis.create_text(min(xx, WF_W * ZOOM - 14), 10, text=str(f_hz), font=('Helvetica', 8),
+            axis.create_text(min(xx, WF_W - 14), 10, text=str(f_hz), font=('Helvetica', 8),
                              fill=self.colors()['dim'])
+        clk = ttk.Frame(mon)
+        clk.pack(side='left', padx=GAP)
+        dec = ttk.Frame(mon)
+        dec.pack(side='left', padx=GAP)
+        self.tb_hfp = ttk.Checkbutton(dec, text='HFPager', style='Toolbutton', variable=self.var['hfp_enable'],
+                                      command=self.toggle_hfp, width=13)
+        self.tb_hfp.pack(fill='x', pady=(0, 6))
+        self.tb_sel = ttk.Checkbutton(dec, text='Selcall', style='Toolbutton', variable=self.var['sel_enable'],
+                                      command=self.toggle_sel, width=13)
+        self.tb_sel.pack(fill='x')
+        self.update_decoder_buttons()
 
         self.clock_utc = SegClock(tk, clk, 'UTC')
         self.clock_utc.c.pack(pady=(0, 4))
@@ -654,20 +659,21 @@ class App:
         rgb = self.lut[(norm * 255).astype(np.uint8)]
         try:
             ppm = b'P6 %d %d 255\n' % (WF_W, WF_H) + rgb.tobytes()
-            img = tk.PhotoImage(data=ppm, format='PPM').zoom(ZOOM, ZOOM)
+            img = tk.PhotoImage(data=ppm, format='PPM').zoom(1, ZOOM)
         except Exception:            # old Tk (Python 3.8 / Windows 7): pixel-by-pixel put
             img = tk.PhotoImage(width=WF_W, height=WF_H)
             img.put(' '.join('{' + ' '.join('#%02x%02x%02x' % (r_, g_, b_) for r_, g_, b_ in row) + '}'
                              for row in rgb.tolist()))
-            img = img.zoom(ZOOM, ZOOM)
+            img = img.zoom(1, ZOOM)
         self.wf_state['img'] = img
         self.wf_canvas.itemconfig(self.wf_item, image=img)
 
     def on_spectrum(self, row):
         WF_W = self.WF[0]
-        row = np.asarray(row, dtype=np.float32)[:WF_W]
-        if len(row) < WF_W:
-            row = np.pad(row, (0, WF_W - len(row)), constant_values=-120.0)
+        row = np.asarray(row, dtype=np.float32)[:WF_BINS]
+        if len(row) < WF_BINS:
+            row = np.pad(row, (0, WF_BINS - len(row)), constant_values=-120.0)
+        row = np.interp(np.linspace(0, WF_BINS - 1, WF_W), np.arange(WF_BINS), row).astype(np.float32)
         med = float(np.median(row))
         lo = self.wf_state['lo']
         # the colour scale follows the noise floor slowly; while the input is overloaded the clipping products
@@ -2568,7 +2574,8 @@ def run():
     geo = app.core.s.get('geometry') or ''
     try:
         sh = int(root.winfo_screenheight())
-        root.geometry(geo if geo else '1100x%d' % max(560, min(820, sh - 90)))
+        sw = int(root.winfo_screenwidth())
+        root.geometry(geo if geo else '%dx%d' % (max(800, min(1160, sw - 40)), max(560, min(820, sh - 90))))
         root.minsize(640, 420)
     except Exception:
         pass
