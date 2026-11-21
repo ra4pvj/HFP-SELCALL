@@ -195,6 +195,21 @@ def main():
     app.poll()
     assert core.cur_channel == 1 and app.var['chan_sel'].get() == 1
 
+    # scrollable tabs: scrollbars appear only when the window is smaller than the content
+    cv = app.scroll_canvases[1]                       # the HFPager tab
+    inner = [k for k in cv._kids if k.__class__.__name__ == 'Misc'][0]
+    bars = [k for k in cv.master._kids if k is not cv]
+    fit = cv._binds['<Configure>'][0]
+    cv._size, inner._req = (400, 300), (900, 700)
+    fit()
+    assert all(getattr(b, '_gridded', False) for b in bars), 'both scrollbars must show in a small window'
+    assert cv.cget('scrollregion') == (0, 0, 900, 700)
+    cv._size = (1200, 900)
+    fit()
+    assert not any(getattr(b, '_gridded', False) for b in bars), 'no scrollbars in a big window'
+    assert list(cv._items.values())[0]['height'] == 900
+    assert len(app.scroll_canvases) == len(app.tab_outer) == 6
+
     # level meter / clocks
     core.peak_max = 0.5
     app.update_meter()

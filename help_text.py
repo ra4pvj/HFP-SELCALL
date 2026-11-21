@@ -80,6 +80,7 @@ HF Selcall: «Кому (Selcall ID)»; «Вызов» — вызов без те
 ## Если что-то не работает
 • Нет приёма: проверьте вход и канал, уровень (индикатор должен двигаться), выключите перегрузку.
 • Нет передачи: проверьте метод PTT и COM-порт («Тест PTT»), выход звуковой карты и уровень TX.
+• Окно не помещается на экране: каждая вкладка прокручивается (полосы прокрутки появляются, когда окно меньше содержимого; колесо мыши, Shift + колесо — по горизонтали).
 • Вход «засыпает» (например IC-705 по USB): программа сама перезапускает приём, если звук пропал больше чем на 4 с.
 """
 
@@ -163,6 +164,7 @@ Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A (Cmd on macOS) work in all input fields and in
 ## Troubleshooting
 • No reception: check the input and channel, the level (the meter must move), avoid overload.
 • No transmission: check the PTT method and COM port ("PTT test"), the sound card output and the TX level.
+• The window does not fit the screen: every tab scrolls (scrollbars appear when the window is smaller than the content; mouse wheel, Shift + wheel sideways).
 • The input "falls asleep" (e.g. IC-705 over USB): the program restarts reception by itself if the audio stops for more than 4 s.
 """
 

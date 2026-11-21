@@ -70,6 +70,29 @@ class Misc:
     def winfo_class(self):
         return type(self).__name__
 
+    # sizes for layout tests: set _size = (width, height) / _req = (reqwidth, reqheight)
+    def winfo_width(self):
+        return getattr(self, '_size', (100, 100))[0]
+
+    def winfo_height(self):
+        return getattr(self, '_size', (100, 100))[1]
+
+    def winfo_reqwidth(self):
+        return getattr(self, '_req', (50, 50))[0]
+
+    def winfo_reqheight(self):
+        return getattr(self, '_req', (50, 50))[1]
+
+    def bind(self, seq=None, fn=None, add=None):
+        if fn is not None:
+            self.__dict__.setdefault('_binds', {}).setdefault(seq, []).append(fn)
+
+    def grid(self, *a, **k):
+        self._gridded = True
+
+    def grid_remove(self):
+        self._gridded = False
+
     def winfo_screenheight(self):
         return 900
 
@@ -87,6 +110,13 @@ Toplevel = Frame = Label = Button = Entry = Scrollbar = Listbox = Misc
 
 class Canvas(Misc):
     _n = 0
+
+    def itemconfigure(self, item, **k):
+        self.__dict__.setdefault('_items', {}).setdefault(item, {}).update(k)
+
+    def configure(self, *a, **k):
+        super().configure(*a, **k)
+    config = configure
 
     def _new(self, *a, **k):
         Canvas._n += 1

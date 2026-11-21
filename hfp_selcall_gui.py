@@ -297,6 +297,8 @@ class App:
         self.chat_lines = []                   # (text, tag): kept across rebuilds (language / theme)
         install_clipboard(root, tk)
         root.bind_all('<F1>', lambda e: self.open_help())
+        self.scroll_canvases = []
+        self.install_wheel()
         try:
             self.icon = tk.PhotoImage(file=os.path.join(_here(), 'icon.png'))
             root.iconphoto(True, self.icon)
@@ -401,6 +403,8 @@ class App:
             side='right')
         self.banner_box = ttk.Frame(root)
         self.banner_box.pack(side='top', fill='x')
+        self.tab_outer = []
+        self.scroll_canvases = []
         self.nb = ttk.Notebook(root)
         self.nb.pack(side='top', fill='both', expand=True, padx=8, pady=(2, 4))
         self.build_chat_tab()
@@ -410,7 +414,7 @@ class App:
         self.build_beacon_tab()
         self.build_program_tab()
         try:
-            self.nb.select(int(core.s.get('tab', 0)))
+            self.nb.select(self.tab_outer[int(core.s.get('tab', 0))])
         except Exception:
             pass
         self.refresh_devices()
@@ -706,11 +710,93 @@ class App:
         self.rx_lamp[0].itemconfig(self.rx_lamp[1], fill=colr)
         self.tx_lamp[0].itemconfig(self.tx_lamp[1], fill=LAMP['tx_on'] if self.core.tx_busy else LAMP['tx_off'])
 
+    # ------------------------------------------------------------------ scrollable tabs
+    def add_tab(self, title, padding=8):
+        """a notebook tab whose content scrolls (both ways) when the window is smaller than the content, and
+        stretches to the window when it is larger; returns the frame to build the tab in"""
+        tk, ttk = self.tk, self.ttk
+        outer = ttk.Frame(self.nb)
+        self.nb.add(outer, text=title)
+        self.tab_outer.append(outer)
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+        cv = tk.Canvas(outer, highlightthickness=0, borderwidth=0,
+                       background=self.colors()['bg'] or self.root_bg_default)
+        vs = ttk.Scrollbar(outer, orient='vertical', command=cv.yview)
+        hs = ttk.Scrollbar(outer, orient='horizontal', command=cv.xview)
+        cv.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        cv.grid(row=0, column=0, sticky='nsew')
+        inner = ttk.Frame(cv, padding=padding)
+        win = cv.create_window(0, 0, anchor='nw', window=inner)
+        state = {'v': None, 'h': None}
+
+        def fit(*_):
+            try:
+                w, h = cv.winfo_width(), cv.winfo_height()
+                rw, rh = inner.winfo_reqwidth(), inner.winfo_reqheight()
+            except Exception:
+                return
+            if w <= 1 or h <= 1:
+                return
+            cv.itemconfigure(win, width=max(w, rw), height=max(h, rh))
+            cv.configure(scrollregion=(0, 0, max(w, rw), max(h, rh)))
+            need_v, need_h = rh > h, rw > w
+            if need_v != state['v']:
+                state['v'] = need_v
+                (vs.grid(row=0, column=1, sticky='ns') if need_v else vs.grid_remove())
+            if need_h != state['h']:
+                state['h'] = need_h
+                (hs.grid(row=1, column=0, sticky='ew') if need_h else hs.grid_remove())
+            if not need_v:
+                cv.yview_moveto(0)
+            if not need_h:
+                cv.xview_moveto(0)
+        cv.bind('<Configure>', fit)
+        inner.bind('<Configure>', fit)
+        self.scroll_canvases.append(cv)
+        return inner
+
+    def install_wheel(self):
+        """mouse wheel scrolls the tab under the pointer (Text, lists and tables keep their own scrolling)"""
+        def canvas_of(w):
+            while w is not None:
+                if w in self.scroll_canvases:
+                    return w
+                try:
+                    w = w.master
+                except Exception:
+                    return None
+            return None
+
+        def wheel(ev):
+            w = ev.widget
+            try:
+                if w.winfo_class() in ('Text', 'Listbox', 'Treeview', 'TCombobox'):
+                    return None
+            except Exception:
+                return None
+            cv = canvas_of(w)
+            if cv is None:
+                return None
+            if getattr(ev, 'num', None) == 4:
+                step = -1
+            elif getattr(ev, 'num', None) == 5:
+                step = 1
+            else:
+                d = ev.delta
+                step = -int(d / 120) if abs(d) >= 120 else (-1 if d > 0 else 1)
+            if ev.state & 0x1:                    # Shift + wheel: sideways
+                cv.xview_scroll(step, 'units')
+            else:
+                cv.yview_scroll(step, 'units')
+            return None
+        for seq in ('<MouseWheel>', '<Shift-MouseWheel>', '<Button-4>', '<Button-5>'):
+            self.root.bind_all(seq, wheel, add='+')
+
     # ------------------------------------------------------------------ tab: chat
     def build_chat_tab(self):
         tk, ttk = self.tk, self.ttk
-        f = ttk.Frame(self.nb, padding=4)
-        self.nb.add(f, text='  ' + T('Чат и сообщения') + '  ')
+        f = self.add_tab('  ' + T('Чат и сообщения') + '  ', padding=4)
         # chat on top, the message / call fields below it (packed first, so they keep their size and only
         # the chat shrinks when the window is small)
         self.build_compose(f)
@@ -890,8 +976,7 @@ class App:
     # ------------------------------------------------------------------ tab: HFPager
     def build_hfp_tab(self):
         ttk = self.ttk
-        f = ttk.Frame(self.nb, padding=8)
-        self.nb.add(f, text='  HFPager  ')
+        f = self.add_tab('  HFPager  ')
         g = ttk.LabelFrame(f, text=T('Параметры HFPager'), padding=6)
         g.pack(fill='x')
         rows = [
@@ -978,8 +1063,7 @@ class App:
     # ------------------------------------------------------------------ tab: Selcall
     def build_selcall_tab(self):
         ttk = self.ttk
-        f = ttk.Frame(self.nb, padding=8)
-        self.nb.add(f, text='  HF Selcall  ')
+        f = self.add_tab('  HF Selcall  ')
         g = ttk.LabelFrame(f, text=T('Параметры Selcall'), padding=6)
         g.pack(fill='x')
         r = ttk.Frame(g)
@@ -1041,18 +1125,7 @@ class App:
     # ------------------------------------------------------------------ tab: transceiver & audio
     def build_rig_tab(self):
         tk, ttk = self.tk, self.ttk
-        outer = ttk.Frame(self.nb)
-        self.nb.add(outer, text='  ' + T('Трансивер и аудио') + '  ')
-        # scrollable: the tab is long, small screens must still reach every control
-        cv = tk.Canvas(outer, highlightthickness=0, background=self.colors()['bg'] or self.root_bg_default)
-        vs = ttk.Scrollbar(outer, orient='vertical', command=cv.yview)
-        f = ttk.Frame(cv, padding=8)
-        f.bind('<Configure>', lambda e: cv.configure(scrollregion=cv.bbox('all')))
-        win = cv.create_window(0, 0, anchor='nw', window=f)
-        cv.bind('<Configure>', lambda e: cv.itemconfigure(win, width=e.width))
-        cv.configure(yscrollcommand=vs.set)
-        vs.pack(side='right', fill='y')
-        cv.pack(side='left', fill='both', expand=True)
+        f = self.add_tab('  ' + T('Трансивер и аудио') + '  ')
         dim = self.colors()['dim']
 
         a = ttk.LabelFrame(f, text=T('Звуковой интерфейс'), padding=6)
@@ -1237,9 +1310,8 @@ class App:
     # ------------------------------------------------------------------ tab: beacon & macros
     def build_beacon_tab(self):
         tk, ttk = self.tk, self.ttk
-        f = ttk.Frame(self.nb, padding=8)
-        self.beacon_tab = f
-        self.nb.add(f, text='  ' + T('Маяк и макросы') + '  ')
+        f = self.add_tab('  ' + T('Маяк и макросы') + '  ')
+        self.beacon_tab = self.tab_outer[-1]
         dim = self.colors()['dim']
         g = ttk.LabelFrame(f, text=T('Маяк'), padding=6)
         g.pack(fill='x')
@@ -1476,8 +1548,7 @@ class App:
     # ------------------------------------------------------------------ tab: program
     def build_program_tab(self):
         ttk = self.ttk
-        f = ttk.Frame(self.nb, padding=8)
-        self.nb.add(f, text='  ' + T('Программа') + '  ')
+        f = self.add_tab('  ' + T('Программа') + '  ')
         g = ttk.LabelFrame(f, text=T('Вид'), padding=6)
         g.pack(fill='x')
         ttk.Label(g, text=T('Язык интерфейса:')).grid(row=0, column=0, sticky='e', padx=4, pady=3)
@@ -2500,7 +2571,7 @@ def run():
     try:
         sh = int(root.winfo_screenheight())
         root.geometry(geo if geo else '1100x%d' % max(560, min(820, sh - 90)))
-        root.minsize(820, 500)
+        root.minsize(640, 420)
     except Exception:
         pass
     app.start()
