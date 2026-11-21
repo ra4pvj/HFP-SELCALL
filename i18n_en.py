@@ -835,4 +835,6 @@ EN = {
         'While scanning, the beacon goes out on channel:',
     'При сканировании маяк всегда идёт на одном канале: в нужное время сканер переходит на него, передаёт маяк, ждёт заданное время тишины и продолжает обход. Если сканер стоит на канале из-за приёма, маяк ждёт конца связи.':
         'While scanning, the beacon always goes out on one channel: when it is due, the scanner goes there, sends the beacon, waits the set time of silence and goes on scanning. If the scanner is holding on a channel because of reception, the beacon waits for the contact to end.',
+    'Передача: %s — повторяю':
+        'Transmission: %s — retrying',
 }

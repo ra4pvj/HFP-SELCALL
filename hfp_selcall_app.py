@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta18'
+APP_VERSION = '0.3.0-beta19'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -204,6 +204,7 @@ class Core:
         self.listen_manual = False
         self.listen_timer = None
         self.listen_pending = None    # seconds of listening to start when the current TX ends
+        self.listen_until = 0.0       # end of the timed listening
         self.ext = SE.ExtControl(P.serial)        # external device on its own COM port
         self.ext_manual = False
         self.ext_timer = None
@@ -546,6 +547,7 @@ class Core:
         if self.listen_timer is not None:
             self.listen_timer.cancel()
         sec = min(600.0, max(5.0, float(seconds or self.s.get('sel_listen_seconds') or 60)))
+        self.listen_until = time.time() + sec
         self.q.put(('sys', T('Прослушивание эфира включено на %.0f с') % sec))
 
         def off():
@@ -1442,8 +1444,61 @@ class Core:
             self.ptt.unkey_safe()
             self.tx_busy = False
 
+    def _out_rate(self, out):
+        """a sample rate the output device accepts: ours if possible, else 48000 / 44100 / its default"""
+        chk = getattr(self.sd, 'check_output_settings', None)
+        if chk is None:
+            return self.fs
+        cands = [self.fs, 48000, 44100]
+        try:
+            cands.append(int(self.sd.query_devices(out if out is not None else self.sd.default.device[1])
+                             ['default_samplerate']))
+        except Exception:
+            pass
+        for fs in cands:
+            try:
+                chk(device=out, samplerate=fs, channels=1, dtype='float32')
+                return fs
+            except Exception:
+                continue
+        return self.fs
+
+    def _play_tx(self, audio, out):
+        """play the TX audio and wait; the device rate is matched (resampling); a failed opening of the output
+        (PortAudio error, the device busy for a moment) is retried once"""
+        fs = self._out_rate(out)
+        x = np.asarray(audio, dtype=np.float32)
+        if fs != self.fs and len(x):
+            n = int(round(len(x) * fs / float(self.fs)))
+            x = np.interp(np.arange(n, dtype=np.float64) * (self.fs / float(fs)),
+                          np.arange(len(x), dtype=np.float64), x).astype(np.float32)
+        for attempt in (0, 1):
+            try:
+                self.sd.play(x, fs, device=out)
+                self.sd.wait()
+                return
+            except Exception as ex:
+                if attempt:
+                    raise
+                self.sys(T('Передача: %s — повторяю') % ex)
+                try:
+                    self.sd.stop()
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
     def _tx_run(self, audio, out):
         self.ringer.stop()
+        # the listening stream (input -> loudspeaker) is closed for the transmission: on some Windows audio
+        # drivers a second open output makes PortAudio refuse the TX stream; it is resumed afterwards
+        listen_was = None
+        if self.listener.active:
+            listen_was = 'manual' if self.listen_manual else max(0.0, self.listen_until - time.time())
+            if self.listen_timer is not None:
+                self.listen_timer.cancel()
+                self.listen_timer = None
+            self.listener.stop()
+            self.q.put(('listen_state',))
         meta, self._tx_meta = self._tx_meta, None
         if meta is not None:
             now = time.time()
@@ -1466,8 +1521,7 @@ class Core:
                     err = T('PTT: %s – передача отменена') % err
                     return
                 keyed = True
-            self.sd.play(audio, self.fs, device=out)
-            self.sd.wait()
+            self._play_tx(audio, out)
         except Exception as ex:
             err = str(ex)
         finally:
@@ -1486,8 +1540,13 @@ class Core:
             self.tx_busy = False
             self.q.put(('tx_done', err))
             sec, self.listen_pending = self.listen_pending, None
-            if sec and not err:
+            if listen_was == 'manual':
+                self.listen_manual = False
+                self.toggle_listen()
+            elif sec and not err:
                 self.start_listen(sec)
+            elif listen_was and listen_was >= 5.0:
+                self.start_listen(listen_was)
 
     def abort_tx(self):
         try:

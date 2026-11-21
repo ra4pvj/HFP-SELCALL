@@ -651,6 +651,42 @@ def test_beacon_scan_poll(tmp):
           'transceiver frequency (exact match), unchanged on no answer / TX / CAT off; manual release')
 
 
+def test_tx_output(tmp):
+    """TX output: listening closed for the TX and resumed; device rate matched; one retry of a failed opening"""
+    core, q = make_core(tmp)
+    core.s.update(speed='46.88', hfp_pre_seconds=0, ptt_delay=0.0, hfp_listen_after_tx=False)
+    assert core.start_rx()
+    core.toggle_listen()
+    assert core.listener.active and core.listen_manual
+    FakeSD.played.clear()
+    seen = []
+    orig_play = FakeSD.play.__func__
+
+    def play(cls, audio, fs, device=None):
+        seen.append(core.listener.active)
+        if len(seen) == 1:
+            raise RuntimeError('Error opening OutputStream: Internal PortAudio error [PaErrorCode -9986]')
+        orig_play(cls, audio, fs, device)
+    FakeSD.play = classmethod(play)
+    FakeSD.check_output_settings = staticmethod(
+        lambda **kw: None if kw.get('samplerate') == 44100 else (_ for _ in ()).throw(ValueError('rate')))
+    try:
+        assert core.send(7, 'OUT TEST') is None
+        core._tx_thread.join(30)
+    finally:
+        FakeSD.play = classmethod(orig_play)
+        del FakeSD.check_output_settings
+    assert core.last_tx_error is None, core.last_tx_error
+    assert seen == [False, False], seen                     # listening closed during the TX; retried once
+    audio, fs = FakeSD.played[-1]
+    assert fs == 44100 and abs(len(audio) / 44100.0 - A.Core.air_time('46.88', 8) - 0.3) < 0.1, (fs, len(audio))
+    assert core.listener.active and core.listen_manual, 'manual listening resumed after the TX'
+    core.toggle_listen()
+    core.stop_rx()
+    print('OK  TX output: listening paused for the TX and resumed; 44.1 kHz-only device resampled; '
+          'PortAudio opening error retried once')
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         test_scan_timing()
@@ -663,4 +699,5 @@ if __name__ == '__main__':
         test_answer_listen_ext(tmp)
         test_auto_ack(tmp)
         test_beacon_scan_poll(tmp)
+        test_tx_output(tmp)
     print('ALL OK')
