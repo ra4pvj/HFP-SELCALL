@@ -210,6 +210,17 @@ def main():
     assert list(cv._items.values())[0]['height'] == 900
     assert len(app.scroll_canvases) == len(app.tab_outer) == 6
 
+    # top strip: the spectrum takes what the other parts leave, so the strip is never wider than the window
+    import hfp_selcall_gui as G
+    fixed = sum(w.winfo_reqwidth() for w in app.mon_fixed)
+    for width, want in ((2000, G.WF_MAX), (fixed + 4 * G.MON_GAP_MIN + 2 + 366, 366), (300, G.WF_MIN)):
+        app.mon_bar._size = (width, 120)
+        app.fit_monitor()
+        assert app.WF[0] == want, (width, app.WF[0], want)
+        assert app.wf_canvas.cget('width') == want
+    core.q.put(('event', 'spectrum', {'db': [-80.0] * 270}))
+    app.poll()                                        # drawn at the new width without errors
+
     # level meter / clocks
     core.peak_max = 0.5
     app.update_meter()

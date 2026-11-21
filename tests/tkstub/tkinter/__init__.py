@@ -72,16 +72,16 @@ class Misc:
 
     # sizes for layout tests: set _size = (width, height) / _req = (reqwidth, reqheight)
     def winfo_width(self):
-        return getattr(self, '_size', (100, 100))[0]
+        return self.__dict__.get('_size', (100, 100))[0]
 
     def winfo_height(self):
-        return getattr(self, '_size', (100, 100))[1]
+        return self.__dict__.get('_size', (100, 100))[1]
 
     def winfo_reqwidth(self):
-        return getattr(self, '_req', (50, 50))[0]
+        return self.__dict__.get('_req', (50, 50))[0]
 
     def winfo_reqheight(self):
-        return getattr(self, '_req', (50, 50))[1]
+        return self.__dict__.get('_req', (50, 50))[1]
 
     def bind(self, seq=None, fn=None, add=None):
         if fn is not None:

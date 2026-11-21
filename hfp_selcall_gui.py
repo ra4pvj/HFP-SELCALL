@@ -41,6 +41,8 @@ DARK = dict(bg='#1e1f22', fg='#e3e3e3', field='#2b2d31', sel='#3d5a80', dim='#9a
             button='#33363c', active='#41454c', tab='#2b2d31', tab_sel='#1e1f22')
 METER_W, METER_H = 200, 16
 WF_BINS = 270                    # spectrum rows from the receiver: 300..3000 Hz in 10 Hz bins
+WF_MIN, WF_MAX = 200, 540        # spectrum width on screen follows the window width between these
+MON_GAP_MIN = 8                  # smallest gap between the parts of the top strip
 OVER_DB = 20 * np.log10(A.CLIP_LEVEL)      # -0.18 dBFS
 
 
@@ -566,7 +568,7 @@ class App:
         bar = ttk.Frame(self.root)
         bar.pack(side='top', fill='x', padx=EDGE, pady=(8, 2))
         for col in (1, 3, 5, 7):
-            bar.columnconfigure(col, weight=1, uniform='gap', minsize=8)
+            bar.columnconfigure(col, weight=1, uniform='gap', minsize=MON_GAP_MIN)
         lamp_fr = ttk.Frame(bar)
         lamp_fr.grid(row=0, column=0, sticky='w')
 
@@ -601,11 +603,13 @@ class App:
         ttk.Label(row, textvariable=self.var['level_txt'], width=11).pack(side='left')
         ttk.Label(row, textvariable=self.var['clip'], foreground='#e02020').pack(side='left')
 
-        # spectrum (waterfall) 300..3000 Hz, newest line on top: 270 bins of 10 Hz drawn WF_W pixels wide
-        WF_W, WF_H, ZOOM = 540, 50, 2
+        # spectrum (waterfall) 300..3000 Hz, newest line on top. The history keeps the 270 bins of 10 Hz; the picture
+        # is drawn as wide as the window leaves for it (WF_MIN..WF_MAX px), so the strip never gets wider than
+        # the window
+        WF_W, WF_H, ZOOM = WF_MAX, 50, 2
         self.WF = (WF_W, WF_H, ZOOM)
-        if self.wf is None or self.wf.shape != (WF_H, WF_W):
-            self.wf = np.full((WF_H, WF_W), -120.0, dtype=np.float32)
+        if self.wf is None or self.wf.shape != (WF_H, WF_BINS):
+            self.wf = np.full((WF_H, WF_BINS), -120.0, dtype=np.float32)
         _pos = [0.0, 0.25, 0.55, 0.8, 1.0]
         _lx = np.linspace(0, 1, 256)
         self.lut = np.stack([np.interp(_lx, _pos, c) for c in
@@ -617,14 +621,10 @@ class App:
                                    highlightthickness=1, highlightbackground='#333333')
         self.wf_canvas.pack()
         self.wf_item = self.wf_canvas.create_image(0, 0, anchor='nw')
-        axis = tk.Canvas(wf_box, width=WF_W, height=14, highlightthickness=0,
-                         background=self.colors()['bg'] or self.root_bg_default)
-        axis.pack()
-        for f_hz in (500, 1000, 1500, 2000, 2500, 3000):
-            xx = (f_hz - 300) / 2700.0 * WF_W
-            axis.create_line(xx, 0, xx, 4, fill=self.colors()['dim'])
-            axis.create_text(min(xx, WF_W - 14), 10, text=str(f_hz), font=('Helvetica', 8),
-                             fill=self.colors()['dim'])
+        self.wf_axis = tk.Canvas(wf_box, width=WF_W, height=14, highlightthickness=0,
+                                 background=self.colors()['bg'] or self.root_bg_default)
+        self.wf_axis.pack()
+        self.set_wf_width(WF_W)
         clk = ttk.Frame(bar)
         clk.grid(row=0, column=6)
         dec = ttk.Frame(bar)
@@ -636,12 +636,46 @@ class App:
                                       command=self.toggle_sel, width=13)
         self.tb_sel.pack(fill='x')
         self.update_decoder_buttons()
+        self.mon_bar, self.mon_fixed = bar, (lamp_fr, meter, clk, dec)
+        bar.bind('<Configure>', lambda e: self.fit_monitor())
 
         self.clock_utc = SegClock(tk, clk, 'UTC')
         self.clock_utc.c.pack(pady=(0, 4))
         self.clock_loc = SegClock(tk, clk, tz_time(self.core.s.get('clock_tz', 'MSK'))[0])
         self.clock_loc.c.pack()
         self.tick_clock()
+
+    def set_wf_width(self, w):
+        """draw the spectrum w px wide (axis included)"""
+        w = int(w)
+        _ww, wh, z = self.WF
+        self.WF = (w, wh, z)
+        self.wf_canvas.configure(width=w)
+        ax = self.wf_axis
+        ax.configure(width=w)
+        try:
+            ax.delete('all')
+        except Exception:
+            pass
+        for f_hz in (500, 1000, 1500, 2000, 2500, 3000):
+            xx = (f_hz - 300) / 2700.0 * w
+            ax.create_line(xx, 0, xx, 4, fill=self.colors()['dim'])
+            ax.create_text(min(xx, w - 14), 10, text=str(f_hz), font=('Helvetica', 8), fill=self.colors()['dim'])
+        if self.wf_state.get('lo') is not None:
+            self.draw_waterfall()
+
+    def fit_monitor(self):
+        """the window width changed: give the spectrum what the other four parts and the minimum gaps leave"""
+        try:
+            total = int(self.mon_bar.winfo_width())
+            fixed = sum(int(w.winfo_reqwidth()) for w in self.mon_fixed)
+        except Exception:
+            return
+        if total <= 1:
+            return
+        w = max(WF_MIN, min(WF_MAX, total - fixed - 4 * MON_GAP_MIN - 2))
+        if abs(w - self.WF[0]) >= 2:
+            self.set_wf_width(w)
 
     def tick_clock(self):
         try:
@@ -655,7 +689,12 @@ class App:
     def draw_waterfall(self):
         WF_W, WF_H, ZOOM = self.WF
         tk = self.tk
-        norm = np.clip((self.wf - self.wf_state['lo']) / 45.0, 0.0, 1.0)
+        cols = np.linspace(0, WF_BINS - 1, WF_W)
+        i0 = np.floor(cols).astype(int)
+        i1 = np.minimum(i0 + 1, WF_BINS - 1)
+        fr = (cols - i0).astype(np.float32)
+        wf = self.wf[:, i0] * (1 - fr) + self.wf[:, i1] * fr
+        norm = np.clip((wf - self.wf_state['lo']) / 45.0, 0.0, 1.0)
         rgb = self.lut[(norm * 255).astype(np.uint8)]
         try:
             ppm = b'P6 %d %d 255\n' % (WF_W, WF_H) + rgb.tobytes()
@@ -669,11 +708,9 @@ class App:
         self.wf_canvas.itemconfig(self.wf_item, image=img)
 
     def on_spectrum(self, row):
-        WF_W = self.WF[0]
         row = np.asarray(row, dtype=np.float32)[:WF_BINS]
         if len(row) < WF_BINS:
             row = np.pad(row, (0, WF_BINS - len(row)), constant_values=-120.0)
-        row = np.interp(np.linspace(0, WF_BINS - 1, WF_W), np.arange(WF_BINS), row).astype(np.float32)
         med = float(np.median(row))
         lo = self.wf_state['lo']
         # the colour scale follows the noise floor slowly; while the input is overloaded the clipping products
