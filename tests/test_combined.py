@@ -341,8 +341,69 @@ def test_stage2(tmp):
     print('OK  HFPager beacon frame (type 0x06) transmitted and decoded back')
 
 
+def test_stage3(tmp):
+    """long HFPager preamble on TX, decoding when only the end of it is heard (scanning), the scanner"""
+    core, q = make_core(tmp)
+    core.s.update(speed='23.44', hfp_pre_seconds=12.0, ptt_delay=0.0)
+    assert core.start_rx()
+    core.sel.stop()
+    fs = core.fs
+    FakeSD.played.clear()
+    assert core.send(3, 'LONG PRE') is None
+    core._tx_thread.join(60)
+    audio, _ = FakeSD.played[-1]
+    want = A.Core.air_time('23.44', 8, 12.0)
+    assert abs(len(audio) / fs - 0.3 - want) < 0.1, (len(audio) / fs, want)
+    # heard from second 8 of the 12 s preamble (as when a scanning receiver lands on the channel)
+    gap = np.zeros(3 * fs, np.float32)
+    push(core, np.concatenate([gap, audio[8 * fs:], gap, gap]), fs)
+    items = drain(q, 8.0)
+    core.stop_rx()
+    rx = [i for i in items if i[0] == 'rx']
+    assert any(i[1]['text'] == b'LONG PRE' for i in rx), rx
+    print('OK  preamble 12 s (standard 3.2 s at 23.44 Bd): %.1f s on air; decoded when heard from second 8'
+          % (len(audio) / fs))
+
+    # scanner with a fake CAT
+    tuned = []
+    core.rig.run_actions = lambda cfg, act: (tuned.append((time.time(), act)), [(act, True, 'ok')])[1]
+    core.s.update(rig_port='COM9', scan_resume=2.0, scan_channels=[
+        dict(on=True, freq='7.100', mode='LSB', dwell=1.0), dict(on=False, freq='9.000', mode='USB', dwell=1.0),
+        dict(on=True, freq='10.140', mode='USB', dwell=1.0), dict(on=True, freq='14.100', mode='USB', dwell=1.0)] +
+        [dict(on=False, freq='', mode='USB', dwell=3.0)] * 4)
+    assert core.preamble_for_scan() == 6.0
+    core.last_activity = 0.0
+    assert core.start_scan() is None
+    time.sleep(3.5)
+    seq = [a for _t, a in tuned]
+    assert seq[:3] == ['FRQ 7.100 LSB', 'FRQ 10.140 USB', 'FRQ 14.100 USB'], seq
+    # activity on the current channel -> hold
+    t_hold = time.time()
+    while core.scan_state != 'scan':
+        time.sleep(0.05)
+    time.sleep(0.9)                               # past the retune-transient window
+    core.last_activity = time.time()
+    time.sleep(0.5)
+    assert core.scan_state == 'hold', core.scan_state
+    n = len(tuned)
+    time.sleep(1.5)
+    assert len(tuned) == n, 'must stay on the channel while it is not quiet'
+    time.sleep(1.5)                               # 2 s of silence -> resume
+    assert len(tuned) > n and core.scan_state == 'scan', (len(tuned), n, core.scan_state)
+    core.stop_scan()
+    time.sleep(1.2)
+    assert core.scan_state == 'off'
+    assert core.start_scan() is None
+    core.s['scan_channels'][2]['on'] = core.s['scan_channels'][3]['on'] = False
+    time.sleep(2.5)
+    assert not core.scan_on, 'fewer than 2 channels must stop the scan'
+    print('OK  scanning: skips unticked channels, holds on activity, resumes after %.0f s of silence, stops'
+          % core.s['scan_resume'])
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
+        test_stage3(tmp)
         test_stage2(tmp)
         test_selcall_tx(tmp)
         test_real_recording(tmp)

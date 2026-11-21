@@ -55,6 +55,13 @@ HF Selcall: «Кому (Selcall ID)»; «Вызов» — вызов без те
 ## Сценарии для обоих протоколов
 В таблице сценариев есть столбцы «Протокол» (оба / HFPager / Selcall), «От ID HFPager» и «От Selcall ID». Сценарий выполняется на сообщение HFPager на ваш ID или на Selcall-сообщение с текстом на ваш Selcall ID.
 
+## Сканирование каналов
+Вкладка «Трансивер и аудио», раздел «Сканирование»: таблица из 8 каналов — галочка, частота (МГц), режим и задержка на канале (с). Отметьте от 2 до 8 каналов и нажмите «Начать сканирование». Программа перестраивает трансивер через CAT по кругу. Как только на канале начинается приём (преамбула HFPager или точки Selcall) или идёт передача, сканирование останавливается на этом канале — можно работать с вызывающей станцией. После заданного времени тишины («Возобновить после тишины») сканирование продолжается. Текущий канал показан в строке состояния.
+
+## Длина преамбулы HFPager
+Стандартная преамбула HFPager — около 3–4 с (7,5 с на 1,46 Бод). Сканирующий приёмник попадает на канал в случайный момент, и ему нужно услышать хотя бы ~2 с преамбулы. Поэтому для вызова сканирующей станции преамбула должна быть не короче цикла её сканирования (сумма задержек) + 3 с. Длина задаётся на вкладке «HFPager» («0» — стандартная); кнопка «Для сканирования» / «Подобрать преамбулу и точки» вычисляет её по таблице сканирования и заодно ставит такую же длину точек Selcall (от 6 до 20 с).
+Удлинённая преамбула — это та же последовательность символов, только длиннее; наш приёмник принимает её на всех скоростях, в том числе когда услышан только конец. Принимает ли её оригинальное приложение HFPager, проверить не удалось — проверьте на своём телефоне.
+
 ## Внешнее устройство
 Сирена, лампа или реле на отдельном COM-порту: при вызове на ваш ID на линию RTS/DTR подаётся «1» на заданное время. «Импульс» — проверка, «Внешн.» — включить вручную до повторного нажатия.
 
@@ -127,6 +134,13 @@ When the message «BCN REQ» arrives for your ID, the program answers with a mel
 
 ## Scenarios for both protocols
 The scenario table has the columns «Protocol» (both / HFPager / Selcall), «From HFPager ID» and «From Selcall ID». A scenario runs on an HFPager message to your ID or on a Selcall message call with text to your Selcall ID.
+
+## Channel scanning
+«Transceiver & audio» tab, «Scanning» section: a table of 8 channels — tick, frequency (MHz), mode and dwell (s). Tick 2 to 8 channels and press «Start scanning». The program retunes the transceiver via CAT in a circle. As soon as reception starts on a channel (HFPager preamble or Selcall dots) or we transmit, scanning stops on that channel so you can work the calling station. After the set time of silence («Resume after silence») scanning continues. The current channel is shown in the status bar.
+
+## HFPager preamble length
+The standard HFPager preamble is about 3–4 s (7.5 s at 1.46 Bd). A scanning receiver lands on the channel at a random moment and needs to hear at least ~2 s of preamble. So to call a scanning station the preamble must be at least its scan cycle (sum of dwells) + 3 s. The length is set on the «HFPager» tab («0» = standard); the «For scanning» / «Fit preamble and dots» button computes it from the scan table and also sets the Selcall dots to the same length (6 to 20 s).
+The long preamble is the same symbol sequence, only longer; our receiver accepts it at all speeds, also when only its end is heard. Whether the original HFPager app accepts it could not be tested — please check with your phone.
 
 ## External device
 A siren, lamp or relay on a separate COM port: on a call to your ID "1" is put on RTS/DTR for the set time. "Pulse" tests it, "Ext." switches it on until pressed again.

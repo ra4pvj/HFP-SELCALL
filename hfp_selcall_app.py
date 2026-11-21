@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta4'
+APP_VERSION = '0.3.0-beta5'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -88,7 +88,31 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 macros=None,
                 # beacon: every N minutes or at given UTC times; HFPager beacon / message, Selcall call / message, CW
                 bcn_enable=False, bcn_mode='interval', bcn_interval=30.0, bcn_times='00:00 06:00 12:00 18:00',
-                bcn_kind='hfp_beacon', bcn_to='0', bcn_text='', bcn_cw_wpm=20.0, bcn_cw_tone=800.0)
+                bcn_kind='hfp_beacon', bcn_to='0', bcn_text='', bcn_cw_wpm=20.0, bcn_cw_tone=800.0,
+                # ---- stage 3: HFPager preamble length (0 = standard of the speed) and channel scanning
+                hfp_pre_seconds=0.0, scan_channels=None, scan_resume=30.0)
+
+SCAN_CHANNELS = 8
+PRE_FOR_SCAN_MARGIN = 3.0      # the receiver needs ~2 s of preamble after landing on the channel (+ detection)
+
+
+def default_scan_channels():
+    f = [('3.600', 'LSB'), ('7.100', 'LSB'), ('10.140', 'USB'), ('14.100', 'USB')]
+    out = [dict(on=True, freq=a, mode=b, dwell=3.0) for a, b in f]
+    return out + [dict(on=False, freq='', mode='USB', dwell=3.0) for _ in range(SCAN_CHANNELS - len(out))]
+
+
+def standard_preamble_seconds(speed):
+    sp = R.M.SPEEDS[speed]
+    return sp['pre'] / sp['baud']
+
+
+def extra_preamble_symbols(speed, total_seconds):
+    """symbols added before the standard preamble so that the whole preamble lasts total_seconds"""
+    sp = R.M.SPEEDS[speed]
+    if not total_seconds or total_seconds <= sp['pre'] / sp['baud']:
+        return 0
+    return int(np.ceil(total_seconds * sp['baud'])) - sp['pre']
 
 MACRO_KINDS = ['hfp_msg', 'hfp_call', 'sel_call', 'sel_msg']
 BEACON_KINDS = ['hfp_beacon', 'hfp_msg', 'sel_call', 'sel_msg', 'cw']
@@ -126,6 +150,9 @@ class Core:
         m = self.s.get('macros')
         if not isinstance(m, list) or len(m) != 10:
             self.s['macros'] = default_macros()
+        sc = self.s.get('scan_channels')
+        if not isinstance(sc, list) or len(sc) != SCAN_CHANNELS:
+            self.s['scan_channels'] = default_scan_channels()
         self.engine = None
         self.stream = None
         self.fs = 48000
@@ -164,6 +191,12 @@ class Core:
         self.bcn_last = time.time()       # beacon: time of the last one (interval mode counts from here)
         self.bcn_minute = None            # beacon: 'HH:MM' already served (time mode)
         self.bcn_next = None              # beacon: unix time of the next one, for the GUI
+        self.last_activity = 0.0          # last signal / decode / own TX (scanning holds on a channel while recent)
+        self.scan_on = False
+        self.scan_state = 'off'           # off | scan | hold
+        self.scan_ch = None               # index of the current scan channel
+        self.scan_ignore_until = 0.0      # retune transients must not stop the scan
+        self._scan_thread = None
         threading.Thread(target=self._rx_watchdog, daemon=True).start()
         threading.Thread(target=self._beacon_loop, daemon=True).start()
 
@@ -380,6 +413,7 @@ class Core:
     def _on_sel_call(self, c, when):
         """a Selcall / Message call was decoded (worker thread)"""
         self.last_sel_rx = time.time()
+        self.last_activity = self.last_sel_rx
         mine = SE.same_id(c['to'], self.s['sel_my_id'])
         # a call FROM our own ID is a normal call (happens in practice); only our own transmission is an echo:
         # same addressee and text, at the time of our transmission
@@ -553,10 +587,13 @@ class Core:
         self.ext.close(self.s.get('sel_ext_line') or 'RTS+DTR', bool(self.s.get('sel_ext_invert')))
 
     def _on_event(self, kind, info):
+        if kind == 'state' and info.get('state') in ('receiving', 'decoding') and time.time() > self.scan_ignore_until:
+            self.last_activity = time.time()
         self.q.put(('event', kind, info))
 
     def _on_frame(self, fr, info):
         now = time.time()
+        self.last_activity = now
         stamp = datetime.datetime.now().isoformat(timespec='seconds')
         if fr.get('kind') in ('ack', 'nak'):
             mine = int(self.s['my_id'])
@@ -815,7 +852,7 @@ class Core:
         own = int(self.s['counter']) & 0xFF
         with R.MODEM_LOCK:
             M.set_speed(fr['speed'])
-            nib = M.tx_nibbles(M.ack_frame_nibbles(fr['sender'], fr['counter'], fr['hdr_crc'],
+            nib = self.pre_extra(fr['speed']) + M.tx_nibbles(M.ack_frame_nibbles(fr['sender'], fr['counter'], fr['hdr_crc'],
                                                    orig_len=fr['length'], own_counter=own))
             audio = M.synth(M.nibbles_to_tones(nib), fs=self.fs, f0=float(self.s['f0']),
                             amp=float(self.s['tx_level']), lead=float(self.s['ptt_delay']), tail=0.3)
@@ -831,15 +868,20 @@ class Core:
 
     # ---- transmitting
     @staticmethod
-    def air_time(speed, nbytes):
+    def air_time(speed, nbytes, pre_seconds=0.0):
         sp = R.M.SPEEDS[speed]
         nsb = 1 + (nbytes + 11) // 12
-        return (sp['pre'] + 1 + 60 * nsb + 2) / sp['baud']
+        return (sp['pre'] + extra_preamble_symbols(speed, pre_seconds) + 1 + 60 * nsb + 2) / sp['baud']
+
+    def pre_extra(self, speed):
+        """extra preamble nibbles (the preamble nibble repeated): a longer preamble lets a scanning receiver stop
+        on our channel and still hear enough of it"""
+        return [M.PRE_NIB] * extra_preamble_symbols(speed, float(self.s.get('hfp_pre_seconds') or 0))
 
     def build_audio(self, dest, sender, counter, text_bytes, speed, f0, level, ptt_delay, ack, b0=0x05):
         with R.MODEM_LOCK:
             M.set_speed(speed)
-            nib = M.tx_nibbles(M.frame_nibbles(dest, sender, counter, text_bytes, b0=b0,
+            nib = self.pre_extra(speed) + M.tx_nibbles(M.frame_nibbles(dest, sender, counter, text_bytes, b0=b0,
                                                b1=0xA2 if ack else 0xA0))
             tones = M.nibbles_to_tones(nib)
             audio = M.synth(tones, fs=self.fs, f0=f0, amp=level, lead=ptt_delay, tail=0.3)
@@ -872,6 +914,93 @@ class Core:
         self._tx_thread.start()
         self.log(T('%s  CW: %s') % (self._stamp(), text))
         return None
+
+    # ---- channel scanning (CAT): stop on activity, resume after `scan_resume` s of silence
+    def scan_list(self):
+        out = []
+        for i, c in enumerate(self.s.get('scan_channels') or []):
+            if c.get('on') and str(c.get('freq', '')).strip():
+                try:
+                    G.parse_freq(str(c['freq']))
+                except Exception:
+                    continue
+                out.append(i)
+        return out
+
+    def scan_cycle_seconds(self):
+        return sum(float(self.s['scan_channels'][i].get('dwell') or 3) for i in self.scan_list())
+
+    def preamble_for_scan(self):
+        """preamble / dots length a CALLING station needs so that this scanning station catches it"""
+        return round(self.scan_cycle_seconds() + PRE_FOR_SCAN_MARGIN, 1)
+
+    def start_scan(self):
+        """returns error text or None"""
+        lst = self.scan_list()
+        if len(lst) < 2:
+            return T('Для сканирования отметьте от 2 до 8 каналов с частотой.')
+        cfg = self.rig_cfg()
+        if not cfg.get('port'):
+            return T('Не выбран COM-порт CAT трансивера (вкладка «Трансивер и аудио»).')
+        if self.scan_on:
+            return None
+        self.scan_on = True
+        self._scan_thread = threading.Thread(target=self._scan_loop, daemon=True)
+        self._scan_thread.start()
+        self.sys(T('Сканирование: %d каналов, цикл %.0f с') % (len(lst), self.scan_cycle_seconds()))
+        return None
+
+    def stop_scan(self):
+        self.scan_on = False
+
+    def _busy_for_scan(self):
+        return (self.tx_busy or self.listener.active or self.ringer.active or
+                (self.engine is not None and getattr(self.engine, '_seg', None) is not None))
+
+    def _scan_loop(self):
+        k = 0
+        try:
+            while self.scan_on:
+                lst = self.scan_list()
+                if len(lst) < 2:
+                    self.sys(T('Сканирование остановлено: меньше 2 каналов.'))
+                    break
+                i = lst[k % len(lst)]
+                k += 1
+                ch = self.s['scan_channels'][i]
+                while self.tx_busy and self.scan_on:
+                    time.sleep(0.2)
+                act = 'FRQ %s %s' % (str(ch['freq']).strip(), ch.get('mode') or 'USB')
+                self.scan_ignore_until = time.time() + 0.8
+                res = self.rig.run_actions(self.rig_cfg(), act)
+                bad = [m for _a, good, m in res if not good]
+                if bad:
+                    self.sys(T('Сканирование остановлено: ошибка CAT: %s') % bad[0])
+                    break
+                self.scan_ch, self.scan_state = i, 'scan'
+                self.q.put(('scan_state',))
+                t_end = time.time() + max(1.0, float(ch.get('dwell') or 3))
+                while self.scan_on and time.time() < t_end:
+                    time.sleep(0.1)
+                    if time.time() > self.scan_ignore_until and (
+                            time.time() - self.last_activity < 1.0 or self._busy_for_scan()):
+                        # activity: stay on this channel and work with the calling station
+                        self.scan_state = 'hold'
+                        self.q.put(('scan_state',))
+                        self.log(T('%s  СКАНИРОВАНИЕ: остановка на канале %d (%s %s)') % (
+                            self._stamp(), i + 1, ch['freq'], ch.get('mode')))
+                        while self.scan_on:
+                            time.sleep(0.2)
+                            quiet = time.time() - self.last_activity
+                            if not self._busy_for_scan() and quiet >= float(self.s.get('scan_resume') or 30):
+                                break
+                        break
+        except Exception as ex:
+            self.sys(T('Сканирование: ошибка %s') % ex)
+        finally:
+            self.scan_on = False
+            self.scan_state = 'off'
+            self.q.put(('scan_state',))
 
     # ---- beacon (by interval or at given UTC times)
     @staticmethod
@@ -1098,6 +1227,7 @@ class Core:
             if sel is not None:
                 sel.mute(False)
             self.last_tx_error = err
+            self.last_activity = time.time()
             self.tx_busy = False
             self.q.put(('tx_done', err))
             sec, self.listen_pending = self.listen_pending, None

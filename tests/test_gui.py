@@ -137,6 +137,23 @@ def main():
     core._tx_thread.join(60)
     app.poll()
 
+    # stage 3: preamble for scanning, scan button with a fake CAT
+    core.rig.run_actions = lambda cfg, act: [(act, True, 'ok')]
+    app.var['rig_port'].set('COM9')
+    app.pre_for_scan()
+    assert core.s['hfp_pre_seconds'] == core.preamble_for_scan() > 0
+    app.toggle_scan()
+    time.sleep(0.5)
+    assert core.scan_on
+    app.poll()
+    assert app.var['scan_info'].get(), 'scan status not shown'
+    app.toggle_scan()
+    time.sleep(3.5)
+    app.poll()
+    assert not core.scan_on and app.var['scan_info'].get() == ''
+    core.s['hfp_pre_seconds'] = 0.0
+    app.var['hfp_pre_seconds'].set('0')
+
     # level meter / clocks
     core.peak_max = 0.5
     app.update_meter()
@@ -175,7 +192,7 @@ def main():
     log = open(A.LOG_FILE, encoding='utf-8').read()
     assert 'UI ERROR' not in log, log[log.find('UI ERROR') - 200:][:3000]
     print('OK  GUI: built, events handled, limits marked, Selcall and HFPager call banners/answers, macros, '
-          'beacon (CW), meter/overload, «Выключено» ports, scenarios, help, RU/EN and light/dark rebuild — '
+          'beacon (CW), preamble for scanning, scan start/stop, meter/overload, «Выключено» ports, scenarios, help, RU/EN and light/dark rebuild — '
           'no UI errors')
 
 

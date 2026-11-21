@@ -396,6 +396,7 @@ class App:
         sbar.pack(side='bottom', fill='x', padx=8, pady=(0, 4))
         ttk.Label(sbar, textvariable=self.var['status'], width=28).pack(side='left')
         ttk.Label(sbar, textvariable=self.var['info']).pack(side='left', padx=8)
+        ttk.Label(sbar, textvariable=self.var['scan_info'], foreground='#d08000').pack(side='left', padx=8)
         ttk.Label(sbar, text='%s  v%s' % (A.COPYRIGHT, A.APP_VERSION), foreground=self.colors()['dim']).pack(
             side='right')
         self.banner_box = ttk.Frame(root)
@@ -476,6 +477,9 @@ class App:
             bcn_kind=tk.StringVar(value=self.kind_label(s.get('bcn_kind', 'hfp_beacon'))),
             bcn_to=sv('bcn_to'), bcn_text=sv('bcn_text'), bcn_cw_wpm=sv('bcn_cw_wpm', '%g'),
             bcn_cw_tone=sv('bcn_cw_tone', '%g'), bcn_next=tk.StringVar(value=''),
+            # preamble / scanning
+            hfp_pre_seconds=sv('hfp_pre_seconds', '%g'), pre_info=tk.StringVar(value=''),
+            scan_resume=sv('scan_resume', '%g'), scan_info=tk.StringVar(value=''),
             # CAT
             rig_proto=sv('rig_proto'), rig_port=tk.StringVar(value=s['rig_port'] or T(PORT_OFF)),
             rig_baud=sv('rig_baud'), rig_freq=tk.StringVar(value='7.100'), rig_mode=tk.StringVar(value='USB'),
@@ -866,10 +870,19 @@ class App:
                                                          width=7, state='readonly')),
             (T('Тон 0, Гц (300…2000):'), ttk.Entry(g, textvariable=self.var['f0'], width=8)),
             (T('Порог приёма, дБ (1…20):'), ttk.Entry(g, textvariable=self.var['sens_db'], width=8)),
+            (T('Преамбула при передаче, с (0 = стандартная):'),
+             ttk.Entry(g, textvariable=self.var['hfp_pre_seconds'], width=8)),
         ]
         for i, (lbl, w) in enumerate(rows):
             ttk.Label(g, text=lbl).grid(row=i, column=0, sticky='e', padx=4, pady=3)
             w.grid(row=i, column=1, sticky='w')
+        pr = ttk.Frame(g)
+        pr.grid(row=len(rows) - 1, column=2, sticky='w', padx=8)
+        ttk.Button(pr, text=T('Для сканирования'), command=self.pre_for_scan).pack(side='left')
+        ttk.Label(pr, textvariable=self.var['pre_info'], foreground=self.colors()['dim']).pack(side='left', padx=8)
+        self.var['speed'].trace_add('write', lambda *a: self.update_pre_info())
+        self.var['hfp_pre_seconds'].trace_add('write', lambda *a: self.update_pre_info())
+        self.update_pre_info()
         o = ttk.Frame(g)
         o.grid(row=len(rows), column=0, columnspan=3, sticky='w', pady=4)
         ttk.Checkbutton(o, text=T('АПЧ'), variable=self.var['afc']).pack(side='left', padx=4)
@@ -1131,6 +1144,40 @@ class App:
             ttk.Button(r, text=lbl, width=5, command=lambda a_=act: self.rig_run(a_)).pack(side='left')
         ttk.Button(r, text=T('Сценарии…'), command=self.open_rig_window).pack(side='left', padx=16)
 
+        sf = ttk.LabelFrame(f, text=T('Сканирование каналов (через CAT)'), padding=6)
+        sf.pack(fill='x', pady=(8, 0))
+        grid = ttk.Frame(sf)
+        grid.pack(fill='x')
+        for col, (t, w) in enumerate(((T('№'), 3), (T('Вкл'), 4), (T('Частота, МГц'), 12), (T('Режим'), 9),
+                                      (T('Задержка на канале, с'), 18))):
+            ttk.Label(grid, text=t, width=w).grid(row=0, column=col, sticky='w', padx=2)
+        self.scan_vars = []
+        for i, c in enumerate(self.core.s['scan_channels']):
+            cv = dict(on=tk.BooleanVar(value=bool(c.get('on'))), freq=tk.StringVar(value=str(c.get('freq', ''))),
+                      mode=tk.StringVar(value=c.get('mode') or 'USB'), dwell=tk.StringVar(value='%g' % float(
+                          c.get('dwell') or 3)))
+            self.scan_vars.append(cv)
+            ttk.Label(grid, text=str(i + 1), width=3).grid(row=i + 1, column=0, sticky='w', padx=2)
+            ttk.Checkbutton(grid, variable=cv['on']).grid(row=i + 1, column=1, sticky='w', padx=2)
+            ttk.Entry(grid, textvariable=cv['freq'], width=12).grid(row=i + 1, column=2, sticky='w', padx=2, pady=1)
+            ttk.Combobox(grid, textvariable=cv['mode'], values=G.MODES, width=8, state='readonly').grid(
+                row=i + 1, column=3, sticky='w', padx=2)
+            ttk.Entry(grid, textvariable=cv['dwell'], width=6).grid(row=i + 1, column=4, sticky='w', padx=2)
+        r = ttk.Frame(sf)
+        r.pack(fill='x', pady=(6, 0))
+        ttk.Label(r, text=T('Возобновить сканирование после тишины, с:')).pack(side='left', padx=4)
+        ttk.Entry(r, textvariable=self.var['scan_resume'], width=6).pack(side='left')
+        self.btn_scan = ttk.Button(r, text=T('Начать сканирование'), command=self.toggle_scan, width=24)
+        self.btn_scan.pack(side='left', padx=12)
+        ttk.Button(r, text=T('Подобрать преамбулу и точки'), command=self.pre_for_scan).pack(side='left', padx=4)
+        ttk.Label(sf, text=T('Отметьте от 2 до 8 каналов. Программа перестраивает трансивер по кругу; если на канале '
+                             'начинается приём (преамбула HFPager или точки Selcall) или идёт передача, сканирование '
+                             'останавливается на этом канале и возобновляется после заданного времени тишины. '
+                             'Чтобы сканирующая станция успела остановиться, вызывающая должна передавать преамбулу '
+                             '(HFPager) и точки (Selcall) не короче цикла сканирования + 3 с — кнопка «Подобрать» '
+                             'считает это значение по таблице.'),
+                  foreground=dim, wraplength=880).pack(anchor='w', padx=4, pady=(4, 0))
+
         ef = ttk.LabelFrame(f, text=T('Внешнее устройство (сирена, лампа, реле) — отдельный COM-порт'), padding=6)
         ef.pack(fill='x', pady=8)
         r = ttk.Frame(ef)
@@ -1233,6 +1280,64 @@ class App:
         self.core.s['macros'] = out
         self.core.save()
         self.fill_macro_bar()
+
+    def scan_from_vars(self):
+        out = []
+        for cv in getattr(self, 'scan_vars', []):
+            try:
+                d = max(1.0, min(120.0, float(cv['dwell'].get().replace(',', '.'))))
+            except ValueError:
+                d = 3.0
+            out.append(dict(on=bool(cv['on'].get()), freq=cv['freq'].get().strip(), mode=cv['mode'].get() or 'USB',
+                            dwell=d))
+        return out
+
+    def toggle_scan(self):
+        if self.core.scan_on:
+            self.core.stop_scan()
+            return
+        self.apply()
+        err = self.core.start_scan()
+        if err:
+            self.mb.showwarning(T('Сканирование'), err)
+        self.update_scan_ui()
+
+    def update_scan_ui(self):
+        c = self.core
+        try:
+            self.btn_scan.configure(text=T('Остановить сканирование') if c.scan_on else T('Начать сканирование'))
+        except Exception:
+            pass
+        if not c.scan_on or c.scan_ch is None:
+            self.var['scan_info'].set('')
+            return
+        ch = c.s['scan_channels'][c.scan_ch]
+        what = T('СТОП на канале') if c.scan_state == 'hold' else T('скан')
+        self.var['scan_info'].set('%s %d: %s %s' % (what, c.scan_ch + 1, ch['freq'], ch.get('mode')))
+
+    def update_pre_info(self):
+        try:
+            sp = self.var['speed'].get()
+            std = A.standard_preamble_seconds(sp)
+            want = float(str(self.var['hfp_pre_seconds'].get()).replace(',', '.') or 0)
+            real = max(std, want) if want else std
+            self.var['pre_info'].set(T('стандартная на %s Бод: %.1f с; будет %.1f с') % (sp, std, real))
+        except Exception:
+            self.var['pre_info'].set('')
+
+    def pre_for_scan(self):
+        """preamble (HFPager) and dots (Selcall) long enough for a station scanning the channels of the table"""
+        self.pull()
+        if len(self.core.scan_list()) < 2:
+            self.mb.showinfo(T('Сканирование'), T('Отметьте в таблице сканирования хотя бы 2 канала.'))
+            return
+        v = self.core.preamble_for_scan()
+        self.var['hfp_pre_seconds'].set('%g' % v)
+        self.var['sel_dot_seconds'].set('%g' % max(6.0, min(20.0, v)))
+        self.apply()
+        self.add('[%s] • %s' % (self.now(), T('Преамбула HFPager %.1f с, точки Selcall %.1f с (цикл сканирования '
+                                              '%.0f с + 3 с)') % (v, max(6.0, min(20.0, v)),
+                                                                  self.core.scan_cycle_seconds())), 'sys')
 
     def beacon_now(self):
         self.apply()
@@ -1385,6 +1490,10 @@ class App:
         s['bcn_text'] = v['bcn_text'].get().strip()
         num('bcn_cw_wpm', 5, 60)
         num('bcn_cw_tone', 300, 2500)
+        num('hfp_pre_seconds', 0.0, 120.0)
+        num('scan_resume', 3.0, 3600.0)
+        if getattr(self, 'scan_vars', None):
+            s['scan_channels'] = self.scan_from_vars()
         # CAT
         s['rig_proto'] = v['rig_proto'].get()
         s['rig_port'] = port('rig_port')
@@ -1468,7 +1577,8 @@ class App:
             return
         n = len(self.msg.get().encode('cp1251', 'replace'))
         try:
-            t = A.Core.air_time(self.var['speed'].get(), max(min(n, 252), 1))
+            t = A.Core.air_time(self.var['speed'].get(), max(min(n, 252), 1),
+                                float(str(self.var['hfp_pre_seconds'].get()).replace(',', '.') or 0))
         except Exception:
             t = 0
         self.var['counter'].set(T('%d/252 байт · в эфире ≈ %.0f с · № %d') %
@@ -2143,6 +2253,8 @@ class App:
             add(T('[%s] CW: %s   (передача ≈ %.0f с)') % (now(), item[1], item[2]), 'mine')
             self.var['status'].set(T('Передача CW…'))
             self.set_tx_buttons(True)
+        elif kind == 'scan_state':
+            self.update_scan_ui()
         elif kind in ('listen_state', 'ext_state'):
             self.update_sel_buttons()
         elif kind == 'rx_restart':
@@ -2225,6 +2337,7 @@ class App:
             except Exception:
                 pass
             core.save()
+            core.stop_scan()
             core.stop_rx()
             core.ringer.stop()
             core.listener.stop()

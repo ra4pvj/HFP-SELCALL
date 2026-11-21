@@ -719,4 +719,52 @@ EN = {
         'CW (Morse)',
     '(только на мой ID):':
         '(to my ID only):',
+    'Для сканирования отметьте от 2 до 8 каналов с частотой.':
+        'For scanning, tick 2 to 8 channels with a frequency.',
+    'Не выбран COM-порт CAT трансивера (вкладка «Трансивер и аудио»).':
+        'No CAT COM port of the transceiver selected («Transceiver & audio» tab).',
+    'Сканирование: %d каналов, цикл %.0f с':
+        'Scanning: %d channels, cycle %.0f s',
+    'Сканирование остановлено: меньше 2 каналов.':
+        'Scanning stopped: fewer than 2 channels.',
+    'Сканирование: ошибка %s':
+        'Scanning: error %s',
+    'Сканирование остановлено: ошибка CAT: %s':
+        'Scanning stopped: CAT error: %s',
+    '%s  СКАНИРОВАНИЕ: остановка на канале %d (%s %s)':
+        '%s  SCAN: stopped on channel %d (%s %s)',
+    'СТОП на канале':
+        'STOP on channel',
+    'скан':
+        'scan',
+    'Преамбула при передаче, с (0 = стандартная):':
+        'Transmit preamble, s (0 = standard):',
+    'Сканирование каналов (через CAT)':
+        'Channel scanning (via CAT)',
+    'Начать сканирование':
+        'Start scanning',
+    'Сканирование':
+        'Scanning',
+    'Отметьте в таблице сканирования хотя бы 2 канала.':
+        'Tick at least 2 channels in the scan table.',
+    'Частота, МГц':
+        'Frequency, MHz',
+    'Режим':
+        'Mode',
+    'Задержка на канале, с':
+        'Dwell on channel, s',
+    'стандартная на %s Бод: %.1f с; будет %.1f с':
+        'standard at %s Bd: %.1f s; will be %.1f s',
+    'Для сканирования':
+        'For scanning',
+    'Возобновить сканирование после тишины, с:':
+        'Resume scanning after silence, s:',
+    'Подобрать преамбулу и точки':
+        'Fit preamble and dots',
+    'Отметьте от 2 до 8 каналов. Программа перестраивает трансивер по кругу; если на канале начинается приём (преамбула HFPager или точки Selcall) или идёт передача, сканирование останавливается на этом канале и возобновляется после заданного времени тишины. Чтобы сканирующая станция успела остановиться, вызывающая должна передавать преамбулу (HFPager) и точки (Selcall) не короче цикла сканирования + 3 с — кнопка «Подобрать» считает это значение по таблице.':
+        'Tick 2 to 8 channels. The program retunes the transceiver in a circle; when reception starts on a channel (HFPager preamble or Selcall dots) or we transmit, scanning stops on that channel and resumes after the set time of silence. For a scanning station to stop in time, the calling station must send a preamble (HFPager) and dots (Selcall) at least as long as the scan cycle + 3 s — the «Fit» button computes this from the table.',
+    'Остановить сканирование':
+        'Stop scanning',
+    'Преамбула HFPager %.1f с, точки Selcall %.1f с (цикл сканирования %.0f с + 3 с)':
+        'HFPager preamble %.1f s, Selcall dots %.1f s (scan cycle %.0f s + 3 s)',
 }
