@@ -944,8 +944,6 @@ class App:
                 ttk.Button(self.macro_bar, text=m['label'], command=lambda i_=i: self.run_macro(i_)).pack(
                     side='left', padx=(0, 4))
                 n += 1
-        ttk.Button(self.macro_bar, text=T('Макросы…'), command=lambda: self.nb.select(self.beacon_tab)).pack(
-            side='right')
 
     def run_macro(self, i):
         """macro: fills the fields; with «сразу» it is sent at once"""
