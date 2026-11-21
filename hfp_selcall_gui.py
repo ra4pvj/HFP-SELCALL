@@ -490,6 +490,7 @@ class App:
             bcn_enable=bv('bcn_enable'), bcn_mode=tk.StringVar(value=s.get('bcn_mode', 'interval')),
             bcn_interval=sv('bcn_interval', '%g'), bcn_times=sv('bcn_times'),
             bcn_kind=tk.StringVar(value=self.kind_label(s.get('bcn_kind', 'hfp_beacon'))),
+            bcn_scan_channel=tk.StringVar(value=''),
             bcn_to=sv('bcn_to'), bcn_text=sv('bcn_text'), bcn_cw_wpm=sv('bcn_cw_wpm', '%g'),
             bcn_cw_tone=sv('bcn_cw_tone', '%g'), bcn_next=tk.StringVar(value=''),
             # preamble / scanning
@@ -1420,9 +1421,20 @@ class App:
         ttk.Entry(r, textvariable=self.var['bcn_text'], width=60).pack(side='left', fill='x', expand=True)
         r = ttk.Frame(g)
         r.pack(fill='x', pady=(6, 0))
+        ttk.Label(r, text=T('При сканировании маяк передаётся на канале:')).pack(side='left', padx=4)
+        self.cb_bcn_channel = ttk.Combobox(r, textvariable=self.var['bcn_scan_channel'], width=28,
+                                           state='readonly', values=self.beacon_channel_labels())
+        self.cb_bcn_channel.pack(side='left')
+        self.refresh_channel_buttons()
+        r = ttk.Frame(g)
+        r.pack(fill='x', pady=(6, 0))
         ttk.Button(r, text=T('Применить'), command=self.apply).pack(side='left', padx=4)
         ttk.Button(r, text=T('Передать маяк сейчас'), command=self.beacon_now).pack(side='left', padx=4)
         ttk.Label(r, textvariable=self.var['bcn_next'], foreground=dim).pack(side='left', padx=12)
+        ttk.Label(g, text=T('При сканировании маяк всегда идёт на одном канале: в нужное время сканер переходит на '
+                            'него, передаёт маяк, ждёт заданное время тишины и продолжает обход. Если сканер стоит '
+                            'на канале из-за приёма, маяк ждёт конца связи.'),
+                  foreground=dim, wraplength=900).pack(anchor='w', padx=4, pady=(4, 0))
         ttk.Label(g, text=T('Маяк не начинает передачу, пока идёт приём сигнала или своя передача — ждёт. '
                             '«HFPager: кадр маяк» — как маяк приложения HFPager (тип 0x06, всем). Пустой текст: '
                             '«Beacon from <мой ID>». Selcall: вызов или сообщение на ID «кому». CW — текст '
@@ -1494,8 +1506,33 @@ class App:
             t = A.channel_caption(self.core.s['scan_channels'][i], i)
             if b.cget('text') != t:
                 b.configure(text=t)
+        cb = getattr(self, 'cb_bcn_channel', None)
+        if cb is not None:
+            vals = self.beacon_channel_labels()
+            cb.configure(values=vals)
+            try:
+                i = int(self.core.s.get('bcn_scan_channel', 0))
+            except (TypeError, ValueError):
+                i = 0
+            want = vals[max(0, min(len(vals) - 1, i))]
+            if self.var['bcn_scan_channel'].get() != want:
+                self.var['bcn_scan_channel'].set(want)
+
+    def beacon_channel_labels(self):
+        out = []
+        for i, ch in enumerate(self.core.s['scan_channels']):
+            cap = A.channel_caption(ch, i)
+            f = str(ch.get('freq') or '').strip()
+            out.append('%d: %s' % (i + 1, cap if (not f or cap == f) else '%s (%s)' % (cap, f)))
+        return out
 
     def on_channel(self, i):
+        c = self.core
+        if c.cur_channel == i and not c.scan_on:
+            # the pressed button pressed again: released, the transceiver is not retuned
+            c.release_channel()
+            self.var['chan_sel'].set(-1)
+            return
         self.pull()
         err = self.core.tune_channel(i)
         if err:
@@ -1608,7 +1645,7 @@ class App:
 
     def beacon_now(self):
         self.apply()
-        err = self.core.send_beacon()
+        err = self.core.request_beacon()
         if err:
             self.mb.showwarning(T('Маяк'), err)
         else:
@@ -1754,6 +1791,11 @@ class App:
         s['bcn_times'] = ' '.join(self.core.parse_times(v['bcn_times'].get()))
         s['bcn_kind'] = self.kind_key(v['bcn_kind'].get()) or s.get('bcn_kind', 'hfp_beacon')
         s['bcn_to'] = v['bcn_to'].get().strip() or '0'
+        try:
+            s['bcn_scan_channel'] = max(0, min(A.SCAN_CHANNELS - 1,
+                                               int(v['bcn_scan_channel'].get().split(':')[0]) - 1))
+        except (ValueError, IndexError):
+            pass
         s['bcn_text'] = v['bcn_text'].get().strip()
         num('bcn_cw_wpm', 5, 60)
         num('bcn_cw_tone', 300, 2500)

@@ -570,6 +570,87 @@ def test_auto_ack(tmp):
     print('OK  auto-ACK: standard preamble (%.1f s), waits for our TX, once per frame, again for a repeat' % ack_len)
 
 
+def test_beacon_scan_poll(tmp):
+    """beacon while scanning goes out on the beacon channel; channel buttons follow the transceiver frequency"""
+    core, q = make_core(tmp)
+    tuned = []
+    freq = [7100000]
+    core.rig.run_actions = lambda cfg, act: (tuned.append(act), [(act, True, 'ok')])[1]
+
+    def read_freq(cfg):
+        if freq[0] is None:
+            raise A.G.RigError('no answer')
+        return freq[0]
+    core.rig.read_freq = read_freq
+    core.s.update(rig_port='COM9', scan_resume=2.0, ptt_delay=0.0, speed='46.88', hfp_pre_seconds=0,
+                  bcn_kind='hfp_beacon', bcn_text='BCN', bcn_scan_channel=4, scan_channels=[
+                      dict(on=True, freq='7.100', mode='LSB', dwell=1.0, name=''),
+                      dict(on=True, freq='10.140', mode='USB', dwell=1.0, name=''),
+                      dict(on=False, freq='', mode='USB', dwell=1.0, name=''),
+                      dict(on=False, freq='', mode='USB', dwell=1.0, name=''),
+                      dict(on=False, freq='14.105', mode='USB', dwell=1.0, name='BCN'),
+                      dict(on=False, freq='', mode='USB', dwell=1.0, name='')])
+    # polling: exact frequency -> that channel pressed; any other -> released; no answer / TX -> unchanged
+    core.cur_channel = None
+    core.poll_channel()
+    assert core.cur_channel == 0
+    freq[0] = 7100010
+    core.poll_channel()
+    assert core.cur_channel is None
+    freq[0] = 14105000
+    core.poll_channel()
+    assert core.cur_channel == 4
+    freq[0] = None
+    core.poll_channel()
+    assert core.cur_channel == 4
+    freq[0] = 7100000
+    core.tx_busy = True
+    core.poll_channel()
+    assert core.cur_channel == 4
+    core.tx_busy = False
+    core.s['rig_port'] = ''                          # CAT off: no polling at all
+    core.poll_channel()
+    assert core.cur_channel == 4
+    core.s['rig_port'] = 'COM9'
+    core.release_channel()
+    assert core.cur_channel is None
+    # beacon while scanning: the scanner goes to channel 5, sends it there, holds, then scans on
+    assert core.start_rx()
+    FakeSD.played.clear()
+    core.last_activity = 0.0
+    assert core.start_scan() is None
+    t0 = time.time()
+    while len(tuned) < 2 and time.time() - t0 < 10:
+        time.sleep(0.05)
+    assert core.request_beacon() is None and core.bcn_scan_pending
+    t0 = time.time()
+    while not FakeSD.played and time.time() - t0 < 15:
+        time.sleep(0.1)
+    assert FakeSD.played, tuned
+    assert 'FRQ 14.105 USB' in tuned and core.scan_ch == 4, (tuned, core.scan_ch)
+    t0 = time.time()
+    while core.scan_state != 'hold' and time.time() - t0 < 5:
+        time.sleep(0.05)
+    assert core.scan_state == 'hold'
+    n = len(tuned)
+    t0 = time.time()
+    while len(tuned) == n and time.time() - t0 < 30:
+        time.sleep(0.1)
+    assert tuned[-1] in ('FRQ 7.100 LSB', 'FRQ 10.140 USB'), tuned     # back to the scan list
+    # beacon channel without a frequency: refused
+    core.s['bcn_scan_channel'] = 2
+    assert core.request_beacon()
+    core.stop_scan()
+    t0 = time.time()
+    while core.scan_state != 'off' and time.time() - t0 < 10:
+        time.sleep(0.1)
+    core.stop_rx()
+    core.s.update(rig_port='', bcn_scan_channel=0)
+    core.save()
+    print('OK  beacon while scanning on its own channel (then hold and scan on); channel buttons follow the '
+          'transceiver frequency (exact match), unchanged on no answer / TX / CAT off; manual release')
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         test_scan_timing()
@@ -581,4 +662,5 @@ if __name__ == '__main__':
         test_selcall_03x(tmp)
         test_answer_listen_ext(tmp)
         test_auto_ack(tmp)
+        test_beacon_scan_poll(tmp)
     print('ALL OK')

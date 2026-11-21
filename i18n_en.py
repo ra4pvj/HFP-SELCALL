@@ -819,4 +819,20 @@ EN = {
         'Auto-acknowledgement for ID %d not sent: the transmitter is busy.',
     'Автоподтверждение для ID %d не отправлено: %s':
         'Auto-acknowledgement for ID %d not sent: %s',
+    'у канала %d не задана частота':
+        'channel %d has no frequency',
+    'Маяк при сканировании: %s.':
+        'Beacon while scanning: %s.',
+    'Маяк: сканер перейдёт на канал %d и передаст его':
+        'Beacon: the scanner will go to channel %d and send it',
+    '%s  СКАНИРОВАНИЕ: маяк на канале %d (%s %s)':
+        '%s  SCANNING: beacon on channel %d (%s %s)',
+    'Маяк (канал %d): %s':
+        'Beacon (channel %d): %s',
+    'Маяк при сканировании не передан: %s.':
+        'Beacon while scanning not sent: %s.',
+    'При сканировании маяк передаётся на канале:':
+        'While scanning, the beacon goes out on channel:',
+    'При сканировании маяк всегда идёт на одном канале: в нужное время сканер переходит на него, передаёт маяк, ждёт заданное время тишины и продолжает обход. Если сканер стоит на канале из-за приёма, маяк ждёт конца связи.':
+        'While scanning, the beacon always goes out on one channel: when it is due, the scanner goes there, sends the beacon, waits the set time of silence and goes on scanning. If the scanner is holding on a channel because of reception, the beacon waits for the contact to end.',
 }

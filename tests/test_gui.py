@@ -185,6 +185,15 @@ def main():
     app.var['hfp_listen_after_tx_seconds'].set('45')
     app.apply()
     assert core.s['hfp_listen_after_tx'] is True and core.s['hfp_listen_after_tx_seconds'] == 45
+    # a pressed channel button pressed again: released without retuning
+    core.cur_channel = 2
+    app.var['chan_sel'].set(2)
+    app.on_channel(2)
+    assert core.cur_channel is None and app.var['chan_sel'].get() == -1
+    # beacon channel while scanning: chosen in the beacon settings
+    app.var['bcn_scan_channel'].set(app.beacon_channel_labels()[3])
+    app.apply()
+    assert core.s['bcn_scan_channel'] == 3
     # always starts on the chat tab; three «Слушать» buttons (main page, HFPager, Selcall) show one state
     assert app.nb.cur == 0
     assert len(app.listen_btns) == 3 and app.btn_listen in app.listen_btns

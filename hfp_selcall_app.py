@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0-beta17'
+APP_VERSION = '0.3.0-beta18'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -89,7 +89,7 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 macros=None,
                 # beacon: every N minutes or at given UTC times; HFPager beacon / message, Selcall call / message, CW
                 bcn_enable=False, bcn_mode='interval', bcn_interval=30.0, bcn_times='00:00 06:00 12:00 18:00',
-                bcn_kind='hfp_beacon', bcn_to='0', bcn_text='', bcn_cw_wpm=20.0, bcn_cw_tone=800.0,
+                bcn_kind='hfp_beacon', bcn_scan_channel=0, bcn_to='0', bcn_text='', bcn_cw_wpm=20.0, bcn_cw_tone=800.0,
                 # ---- stage 3: HFPager preamble length (0 = standard of the speed) and channel scanning
                 hfp_pre_seconds=0.0, scan_channels=None, scan_resume=30.0,
                 # HFPager decoder on/off (the Selcall one is sel_enable); the spectrum and the level keep working
@@ -109,6 +109,7 @@ SCAN_CHANNELS = 6
 HFP_PRE_MARGIN = 2.3
 SEL_DOTS_MARGIN = 0.6
 SCAN_DWELL_DEFAULT = 1.0
+FREQ_POLL = 2.0        # s: the transceiver frequency is read this often to press / release the channel buttons
 
 
 def default_scan_channels():
@@ -218,6 +219,8 @@ class Core:
         self.bcn_last = time.time()       # beacon: time of the last one (interval mode counts from here)
         self.bcn_minute = None            # beacon: 'HH:MM' already served (time mode)
         self.bcn_next = None              # beacon: unix time of the next one, for the GUI
+        self.bcn_scan_pending = False     # beacon due while scanning: the scanner goes to the beacon channel
+        self.cat_tuning = False           # a channel button is retuning the transceiver (no frequency polling)
         self.last_activity = 0.0          # last signal / decode / own TX (scanning holds on a channel while recent)
         self.scan_on = False
         self.scan_state = 'off'           # off | scan | hold
@@ -230,6 +233,7 @@ class Core:
         self.cur_channel = None           # channel last tuned by a button or by the scan
         threading.Thread(target=self._rx_watchdog, daemon=True).start()
         threading.Thread(target=self._beacon_loop, daemon=True).start()
+        threading.Thread(target=self._freq_loop, daemon=True).start()
 
     # ---- settings
     def load(self):
@@ -1055,16 +1059,89 @@ class Core:
             self.scan_on = False
 
         def work():
-            th = self._scan_thread
-            if th is not None and th is not threading.current_thread():
-                th.join(5.0)
-            ok = self.run_actions_logged('FRQ %s %s' % (str(ch['freq']).strip(), ch.get('mode') or 'USB'),
-                                         T('канал %d «%s»') % (i + 1, channel_caption(ch, i)))
-            if ok:
-                self.cur_channel = i
+            self.cat_tuning = True
+            try:
+                th = self._scan_thread
+                if th is not None and th is not threading.current_thread():
+                    th.join(5.0)
+                ok = self.run_actions_logged('FRQ %s %s' % (str(ch['freq']).strip(), ch.get('mode') or 'USB'),
+                                             T('канал %d «%s»') % (i + 1, channel_caption(ch, i)))
+                if ok:
+                    self.cur_channel = i
+            finally:
+                self.cat_tuning = False
             self.q.put(('scan_state',))
         threading.Thread(target=work, daemon=True).start()
         return None
+
+    def release_channel(self):
+        """the pressed channel button pressed again: released, the transceiver stays where it is"""
+        self.cur_channel = None
+        self.q.put(('scan_state',))
+
+    @staticmethod
+    def channel_hz(ch):
+        try:
+            return int(round(float(str(ch.get('freq', '')).strip().replace(',', '.')) * 1e6))
+        except (TypeError, ValueError):
+            return None
+
+    def channel_at(self, hz):
+        """index of the first channel whose frequency is exactly hz, or None"""
+        for i, ch in enumerate(self.s.get('scan_channels') or []):
+            if hz is not None and self.channel_hz(ch) == int(hz):
+                return i
+        return None
+
+    def poll_channel(self):
+        """read the transceiver frequency (CAT) and press / release the channel buttons to match it; nothing while
+        scanning, transmitting or retuning; a CAT error changes nothing and is not logged"""
+        cfg = self.rig_cfg()
+        if not cfg.get('port') or self.scan_on or self.tx_busy or self.cat_tuning:
+            return
+        th = self._scan_thread
+        if th is not None and th.is_alive():
+            return
+        try:
+            hz = self.rig.read_freq(cfg)
+        except Exception:
+            return
+        if self.scan_on or self.tx_busy or self.cat_tuning or hz is None:
+            return
+        i = self.channel_at(hz)
+        if i != self.cur_channel:
+            self.cur_channel = i
+            self.q.put(('scan_state',))
+
+    def _freq_loop(self):
+        while True:
+            time.sleep(FREQ_POLL)
+            try:
+                self.poll_channel()
+            except Exception:
+                pass
+
+    def beacon_channel(self):
+        """(index, None) of the channel the beacon goes out on while scanning, or (None, error text)"""
+        try:
+            i = int(self.s.get('bcn_scan_channel', 0))
+        except (TypeError, ValueError):
+            i = 0
+        i = max(0, min(SCAN_CHANNELS - 1, i))
+        if self.channel_hz(self.s['scan_channels'][i]) is None:
+            return None, T('у канала %d не задана частота') % (i + 1)
+        return i, None
+
+    def request_beacon(self):
+        """beacon now: while scanning, the scanner takes it to the beacon channel; otherwise sent here at once"""
+        if self.scan_on:
+            i, err = self.beacon_channel()
+            if err:
+                return T('Маяк при сканировании: %s.') % err
+            self.bcn_scan_pending = True
+            self.sys(T('Маяк: сканер перейдёт на канал %d и передаст его') % (i + 1))
+            return None
+        return self.send_beacon()
 
     def _busy_for_scan(self):
         return (self.tx_busy or self.listener.active or self.ringer.active or
@@ -1088,8 +1165,15 @@ class Core:
                 if len(lst) < 2:
                     self.sys(T('Сканирование остановлено: меньше 2 каналов.'))
                     break
-                i = lst[k % len(lst)]
-                k += 1
+                bcn = self.bcn_scan_pending
+                if bcn:
+                    i, err = self.beacon_channel()
+                    if err:
+                        self.bcn_scan_pending = bcn = False
+                        self.sys(T('Маяк при сканировании не передан: %s.') % err)
+                if not bcn:
+                    i = lst[k % len(lst)]
+                    k += 1
                 ch = self.s['scan_channels'][i]
                 while self.tx_busy and self.scan_on:
                     time.sleep(0.2)
@@ -1107,6 +1191,21 @@ class Core:
                 self.scan_ch, self.scan_state = i, 'scan'
                 self.cur_channel = i
                 self.q.put(('scan_state',))
+                if bcn:
+                    self.bcn_scan_pending = False
+                    self.log(T('%s  СКАНИРОВАНИЕ: маяк на канале %d (%s %s)') % (
+                        self._stamp(), i + 1, ch['freq'], ch.get('mode')))
+                    # not over a signal on that channel: wait for it to end (up to a minute)
+                    time.sleep(1.0)
+                    t0 = time.time()
+                    while self.scan_on and time.time() - t0 < 60 and (
+                            self.tx_busy or (self.engine is not None and getattr(self.engine, '_seg', None) is not None)):
+                        time.sleep(0.2)
+                    if not self.scan_on:
+                        break
+                    err = self.send_beacon()
+                    self.sys(T('Маяк (канал %d): %s') % (i + 1, err or T('передан')))
+                    # then the usual hold: our TX is activity, the scan goes on after the set silence
                 t_end = time.time() + max(1.0, float(ch.get('dwell') or SCAN_DWELL_DEFAULT))
                 while self.scan_on and time.time() < t_end:
                     time.sleep(0.1)
@@ -1128,6 +1227,7 @@ class Core:
             self.sys(T('Сканирование: ошибка %s') % ex)
         finally:
             self.scan_on = False
+            self.bcn_scan_pending = False
             if restore and self.scan_home_hz and not self.scan_no_restore:
                 t0 = time.time()
                 while self.tx_busy and time.time() - t0 < 120:      # do not retune under our own transmission
@@ -1209,6 +1309,16 @@ class Core:
                     continue
                 due, self.bcn_next = self.beacon_due()
                 if not due:
+                    continue
+                if self.scan_on:
+                    # always on the same channel: the scanner goes there, sends it and goes on scanning
+                    if not self.bcn_scan_pending:
+                        now = time.time()
+                        self.bcn_last = now
+                        self.bcn_minute = datetime.datetime.utcfromtimestamp(now).strftime('%Y-%m-%d %H:%M')
+                        err = self.request_beacon()
+                        if err:
+                            self.sys(err)
                     continue
                 # do not transmit over a signal being received or our own transmission: wait (up to the next check)
                 busy = self.tx_busy or (self.engine is not None and getattr(self.engine, '_seg', None) is not None)
