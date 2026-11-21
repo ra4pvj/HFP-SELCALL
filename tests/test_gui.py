@@ -142,6 +142,7 @@ def main():
     app.var['rig_port'].set('COM9')
     app.pre_for_scan()
     assert core.s['hfp_pre_seconds'] == core.preamble_for_scan() > 0
+    assert core.s['sel_dot_seconds'] == core.dots_for_scan() >= 6.0
     app.toggle_scan()
     time.sleep(0.5)
     assert core.scan_on

@@ -93,13 +93,21 @@ DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4
                 hfp_pre_seconds=0.0, scan_channels=None, scan_resume=30.0)
 
 SCAN_CHANNELS = 8
-PRE_FOR_SCAN_MARGIN = 3.0      # the receiver needs ~2 s of preamble after landing on the channel (+ detection)
+# Measured with this receiver (tests in the stage-3 commit):
+#  * a preamble / Selcall dots already on air are detected 0.3 s after landing on the channel (3 blocks of
+#    0.1 s; also at -7 dB SNR in 3 kHz) -> a dwell of 1…1.5 s per channel is enough if the radio settles fast;
+#  * HFPager decodes only if >= ~2 s of preamble is still left (5.86 Bd: 2.1 s ok / 1.1 s not; 23.44: 1.7 / 0.7;
+#    46.88: 1.4 / 0.6) -> preamble >= scan cycle + 2.5 s;
+#  * Selcall decodes even with 0.3 s of dots left -> dots >= scan cycle + 1 s (CODAN 6 s dots: 5-6 channels of 1 s).
+HFP_PRE_MARGIN = 2.5
+SEL_DOTS_MARGIN = 1.0
+SCAN_DWELL_DEFAULT = 1.5
 
 
 def default_scan_channels():
     f = [('3.600', 'LSB'), ('7.100', 'LSB'), ('10.140', 'USB'), ('14.100', 'USB')]
-    out = [dict(on=True, freq=a, mode=b, dwell=3.0) for a, b in f]
-    return out + [dict(on=False, freq='', mode='USB', dwell=3.0) for _ in range(SCAN_CHANNELS - len(out))]
+    out = [dict(on=True, freq=a, mode=b, dwell=SCAN_DWELL_DEFAULT) for a, b in f]
+    return out + [dict(on=False, freq='', mode='USB', dwell=SCAN_DWELL_DEFAULT) for _ in range(SCAN_CHANNELS - len(out))]
 
 
 def standard_preamble_seconds(speed):
@@ -928,11 +936,15 @@ class Core:
         return out
 
     def scan_cycle_seconds(self):
-        return sum(float(self.s['scan_channels'][i].get('dwell') or 3) for i in self.scan_list())
+        return sum(float(self.s['scan_channels'][i].get('dwell') or SCAN_DWELL_DEFAULT) for i in self.scan_list())
 
     def preamble_for_scan(self):
-        """preamble / dots length a CALLING station needs so that this scanning station catches it"""
-        return round(self.scan_cycle_seconds() + PRE_FOR_SCAN_MARGIN, 1)
+        """HFPager preamble a CALLING station needs so that this scanning station catches it"""
+        return round(self.scan_cycle_seconds() + HFP_PRE_MARGIN, 1)
+
+    def dots_for_scan(self):
+        """Selcall dots for the same (CODAN default 6 s, at most 20 s)"""
+        return round(max(6.0, min(20.0, self.scan_cycle_seconds() + SEL_DOTS_MARGIN)), 1)
 
     def start_scan(self):
         """returns error text or None"""
@@ -971,7 +983,7 @@ class Core:
                 while self.tx_busy and self.scan_on:
                     time.sleep(0.2)
                 act = 'FRQ %s %s' % (str(ch['freq']).strip(), ch.get('mode') or 'USB')
-                self.scan_ignore_until = time.time() + 0.8
+                self.scan_ignore_until = time.time() + 0.5      # retune click / AGC
                 res = self.rig.run_actions(self.rig_cfg(), act)
                 bad = [m for _a, good, m in res if not good]
                 if bad:
@@ -979,11 +991,12 @@ class Core:
                     break
                 self.scan_ch, self.scan_state = i, 'scan'
                 self.q.put(('scan_state',))
-                t_end = time.time() + max(1.0, float(ch.get('dwell') or 3))
+                t_end = time.time() + max(1.0, float(ch.get('dwell') or SCAN_DWELL_DEFAULT))
                 while self.scan_on and time.time() < t_end:
                     time.sleep(0.1)
+                    # any activity since we landed here (after the retune transient)
                     if time.time() > self.scan_ignore_until and (
-                            time.time() - self.last_activity < 1.0 or self._busy_for_scan()):
+                            self.last_activity >= self.scan_ignore_until or self._busy_for_scan()):
                         # activity: stay on this channel and work with the calling station
                         self.scan_state = 'hold'
                         self.q.put(('scan_state',))

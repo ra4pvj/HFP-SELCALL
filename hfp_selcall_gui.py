@@ -1173,9 +1173,11 @@ class App:
         ttk.Label(sf, text=T('Отметьте от 2 до 8 каналов. Программа перестраивает трансивер по кругу; если на канале '
                              'начинается приём (преамбула HFPager или точки Selcall) или идёт передача, сканирование '
                              'останавливается на этом канале и возобновляется после заданного времени тишины. '
-                             'Чтобы сканирующая станция успела остановиться, вызывающая должна передавать преамбулу '
-                             '(HFPager) и точки (Selcall) не короче цикла сканирования + 3 с — кнопка «Подобрать» '
-                             'считает это значение по таблице.'),
+                             'Задержка на канале: сигнал обнаруживается через 0,3 с после перехода, поэтому хватает '
+                             '1–1,5 с (если трансивер быстро перестраивается). Вызывающая станция должна передавать '
+                             'преамбулу HFPager не короче цикла сканирования + 2,5 с (приёмнику нужно услышать ~2 с '
+                             'преамбулы) и точки Selcall не короче цикла + 1 с — кнопка «Подобрать» считает это по '
+                             'таблице.'),
                   foreground=dim, wraplength=880).pack(anchor='w', padx=4, pady=(4, 0))
 
         ef = ttk.LabelFrame(f, text=T('Внешнее устройство (сирена, лампа, реле) — отдельный COM-порт'), padding=6)
@@ -1287,7 +1289,7 @@ class App:
             try:
                 d = max(1.0, min(120.0, float(cv['dwell'].get().replace(',', '.'))))
             except ValueError:
-                d = 3.0
+                d = A.SCAN_DWELL_DEFAULT
             out.append(dict(on=bool(cv['on'].get()), freq=cv['freq'].get().strip(), mode=cv['mode'].get() or 'USB',
                             dwell=d))
         return out
@@ -1331,13 +1333,13 @@ class App:
         if len(self.core.scan_list()) < 2:
             self.mb.showinfo(T('Сканирование'), T('Отметьте в таблице сканирования хотя бы 2 канала.'))
             return
-        v = self.core.preamble_for_scan()
+        v, d = self.core.preamble_for_scan(), self.core.dots_for_scan()
         self.var['hfp_pre_seconds'].set('%g' % v)
-        self.var['sel_dot_seconds'].set('%g' % max(6.0, min(20.0, v)))
+        self.var['sel_dot_seconds'].set('%g' % d)
         self.apply()
-        self.add('[%s] • %s' % (self.now(), T('Преамбула HFPager %.1f с, точки Selcall %.1f с (цикл сканирования '
-                                              '%.0f с + 3 с)') % (v, max(6.0, min(20.0, v)),
-                                                                  self.core.scan_cycle_seconds())), 'sys')
+        self.add('[%s] • %s' % (self.now(), T('Цикл сканирования %.1f с: преамбула HFPager %.1f с (цикл + 2,5 с), '
+                                              'точки Selcall %.1f с (цикл + 1 с, не меньше 6 с)') % (
+            self.core.scan_cycle_seconds(), v, d)), 'sys')
 
     def beacon_now(self):
         self.apply()

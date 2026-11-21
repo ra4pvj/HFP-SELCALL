@@ -371,38 +371,81 @@ def test_stage3(tmp):
         dict(on=True, freq='7.100', mode='LSB', dwell=1.0), dict(on=False, freq='9.000', mode='USB', dwell=1.0),
         dict(on=True, freq='10.140', mode='USB', dwell=1.0), dict(on=True, freq='14.100', mode='USB', dwell=1.0)] +
         [dict(on=False, freq='', mode='USB', dwell=3.0)] * 4)
-    assert core.preamble_for_scan() == 6.0
+    assert core.preamble_for_scan() == 5.5 and core.dots_for_scan() == 6.0
     core.last_activity = 0.0
     assert core.start_scan() is None
-    time.sleep(3.5)
+    t0 = time.time()
+    while len(tuned) < 3 and time.time() - t0 < 10:
+        time.sleep(0.05)
     seq = [a for _t, a in tuned]
     assert seq[:3] == ['FRQ 7.100 LSB', 'FRQ 10.140 USB', 'FRQ 14.100 USB'], seq
-    # activity on the current channel -> hold
-    t_hold = time.time()
-    while core.scan_state != 'scan':
+    # activity on the current channel -> hold (dwell made long so the test is not timing-sensitive)
+    for c in core.s['scan_channels'][:4]:
+        c['dwell'] = 5.0
+    t0 = time.time()
+    while time.time() - t0 < 10 and not (core.scan_state == 'scan' and time.time() > core.scan_ignore_until + 0.1
+                                         and time.time() - tuned[-1][0] < 3.0):
         time.sleep(0.05)
-    time.sleep(0.9)                               # past the retune-transient window
     core.last_activity = time.time()
-    time.sleep(0.5)
+    t0 = time.time()
+    while core.scan_state != 'hold' and time.time() - t0 < 2:
+        time.sleep(0.05)
     assert core.scan_state == 'hold', core.scan_state
     n = len(tuned)
-    time.sleep(1.5)
+    core.last_activity = time.time()
+    time.sleep(1.0)
     assert len(tuned) == n, 'must stay on the channel while it is not quiet'
-    time.sleep(1.5)                               # 2 s of silence -> resume
-    assert len(tuned) > n and core.scan_state == 'scan', (len(tuned), n, core.scan_state)
+    t0 = time.time()                              # 2 s of silence -> resume
+    while len(tuned) == n and time.time() - t0 < 6:
+        time.sleep(0.05)
+    assert len(tuned) > n and time.time() - t0 >= 0.8, (len(tuned), n, time.time() - t0)
     core.stop_scan()
-    time.sleep(1.2)
+    t0 = time.time()
+    while core.scan_state != 'off' and time.time() - t0 < 8:
+        time.sleep(0.05)
     assert core.scan_state == 'off'
+    for c in core.s['scan_channels'][:4]:
+        c['dwell'] = 1.0
     assert core.start_scan() is None
     core.s['scan_channels'][2]['on'] = core.s['scan_channels'][3]['on'] = False
-    time.sleep(2.5)
+    t0 = time.time()
+    while core.scan_on and time.time() - t0 < 8:
+        time.sleep(0.05)
     assert not core.scan_on, 'fewer than 2 channels must stop the scan'
     print('OK  scanning: skips unticked channels, holds on activity, resumes after %.0f s of silence, stops'
           % core.s['scan_resume'])
 
 
+def test_scan_timing():
+    """the numbers the scan formula is built on: detection 0.3 s after landing, Selcall from 0.3 s of dots"""
+    import hfpager_modem as M
+    import hfpager_rx as R
+    fs = 48000
+    rng = np.random.default_rng(3)
+    for speed in ('5.86', '23.44'):
+        ev = []
+        eng = R.RxEngine(fs, lambda fr, i: None, lambda k, i: ev.append((eng._nblocks * 0.1, k, i)))
+        with R.MODEM_LOCK:
+            M.set_speed(speed)
+            sig = M.synth(M.nibbles_to_tones([M.PRE_NIB] * int(6 * M.BAUD)), fs=fs, f0=1611.4, amp=0.003, lead=0,
+                          tail=0).astype(np.float32)
+        x = np.concatenate([np.zeros(6 * fs, np.float32), sig])
+        x += (0.01 * rng.standard_normal(len(x))).astype(np.float32)       # -7 dB SNR in 3 kHz
+        for i in range(0, len(x), 2400):
+            eng.feed(x[i:i + 2400])
+            eng.process_available()
+        t = [tt - 6.0 for tt, k, i in ev if k == 'state' and i.get('state') == 'receiving' and tt > 6.0]
+        assert t and t[0] <= 0.5, (speed, t)
+    full = S.modulate(S.build_call('1234', '5678', None), fs, 6.0, S.F_CENTER, 0.3).astype(np.float32)
+    x = np.concatenate([full[int(5.7 * fs):], np.zeros(3 * fs, np.float32)])
+    x += (0.01 * rng.standard_normal(len(x))).astype(np.float32)
+    assert [(c['from'], c['to']) for c in S.decode(SE.Downsampler(fs).push(x), 8000)] == [('5678', '1234')]
+    print('OK  scan timing: preamble detected <= 0.5 s after landing (-7 dB SNR); Selcall decoded from 0.3 s of dots')
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
+        test_scan_timing()
         test_stage3(tmp)
         test_stage2(tmp)
         test_selcall_tx(tmp)
