@@ -43,6 +43,8 @@ METER_W, METER_H = 200, 16
 WF_BINS = 270                    # spectrum rows from the receiver: 300..3000 Hz in 10 Hz bins
 WF_MIN, WF_MAX = 200, 540        # spectrum width on screen follows the window width between these
 MON_GAP_MIN = 8                  # smallest gap between the parts of the top strip
+NB_PADX = 8                      # notebook (tabs) distance from the window edges; the top strip frame uses it too
+STRIP_PAD = 14                   # lamps / decoder buttons distance from the top strip frame
 OVER_DB = 20 * np.log10(A.CLIP_LEVEL)      # -0.18 dBFS
 
 
@@ -317,7 +319,7 @@ class App:
     def colors(self):
         if self.dark:
             return DARK
-        return dict(bg=None, fg='#000000', field='#ffffff', sel='#a6c8ff', dim='#777777', border='#c0c0c0')
+        return dict(bg=None, fg='#000000', field='#ffffff', sel='#a6c8ff', dim='#777777', border='#a8a8a8')
 
     def apply_theme(self):
         ttk, root = self.ttk, self.root
@@ -409,7 +411,7 @@ class App:
         self.tab_outer = []
         self.scroll_canvases = []
         self.nb = ttk.Notebook(root)
-        self.nb.pack(side='top', fill='both', expand=True, padx=8, pady=(2, 4))
+        self.nb.pack(side='top', fill='both', expand=True, padx=NB_PADX, pady=(2, 4))
         self.build_chat_tab()
         self.build_hfp_tab()
         self.build_selcall_tab()
@@ -564,9 +566,14 @@ class App:
         tk, ttk = self.tk, self.ttk
         # five parts spread over the whole width with equal gaps and the same margin at both edges:
         # lamps | level meter | spectrum | clocks | decoder buttons  (grid: equal-weight spacer columns between)
-        EDGE = 12
-        bar = ttk.Frame(self.root)
-        bar.pack(side='top', fill='x', padx=EDGE, pady=(8, 2))
+        # the strip sits in a frame as wide as the notebook below (same 8 px from the window), so the left and
+        # right borders of the window content run on upwards; inside, 14 px from that frame
+        box = tk.Frame(self.root, highlightthickness=1, borderwidth=0,
+                       highlightbackground=self.colors()['border'], highlightcolor=self.colors()['border'],
+                       background=self.colors()['bg'] or self.root_bg_default)
+        box.pack(side='top', fill='x', padx=NB_PADX, pady=(8, 2))
+        bar = ttk.Frame(box)
+        bar.pack(fill='x', padx=STRIP_PAD, pady=6)
         for col in (1, 3, 5, 7):
             bar.columnconfigure(col, weight=1, uniform='gap', minsize=MON_GAP_MIN)
         lamp_fr = ttk.Frame(bar)
