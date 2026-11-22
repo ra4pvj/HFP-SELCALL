@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.4.0-beta2'
+APP_VERSION = '0.4.0-beta3'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -1726,13 +1726,10 @@ class Core:
                 self.engine.pause(False)
             if sel is not None:
                 sel.mute(False)
-            self.voice_on = False
-            self.last_activity = time.time()
-            self.tx_busy = False
             self.log(T('%s  ГОЛОС: передача %.0f с%s') % (self._stamp(), time.time() - t0,
                                                           ('  — ' + err) if err else ''))
-            self.q.put(('voice', False, err))
-            # then listen to the air (the answer), like after a decoder transmission
+            # then listen to the air (the answer), like after a decoder transmission; started before the
+            # voice state is cleared, so whoever sees the TX ended also sees the listening
             if listen_was == 'manual':
                 self.listen_manual = False
                 self.toggle_listen()
@@ -1740,6 +1737,10 @@ class Core:
                 self.start_listen(float(self.s.get('voice_listen_seconds') or 60))
             elif listen_was and listen_was >= 5.0:
                 self.start_listen(listen_was)
+            self.last_activity = time.time()
+            self.tx_busy = False
+            self.voice_on = False
+            self.q.put(('voice', False, err))
 
     def abort_tx(self):
         self.stop_voice()

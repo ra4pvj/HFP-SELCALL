@@ -28,6 +28,7 @@ from i18n import T
 
 PORT_OFF = 'Выключено'          # port combobox value meaning "no COM port" (stored as '')
 SYS_OUT = 'системный выход'
+PTT_IPADY = 9                    # «ПЕРЕДАЧА» is about twice as tall as «Слушать»
 PTT_KEYS = ['', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'Pause', 'Scroll_Lock',
             'Insert', 'Control_R']          # hot keys for the voice PTT ('' = none; F1 is the help)
 PTT_MODES = (('hold', 'Пока нажата'), ('toggle', 'Нажал — вкл., ещё раз — выкл.'))
@@ -748,31 +749,20 @@ class App:
         clk.grid(row=0, column=6)
         dec = ttk.Frame(bar)
         dec.grid(row=0, column=8, sticky='e')
-        # decoders and «Слушать»: three equal small buttons; under them the larger PTT button
-        small = ('TkDefaultFont', 8)
-        self.ttk.Style(self.root).configure('Small.Toolbutton', font=small, padding=(2, 0))
-        self.ttk.Style(self.root).configure('Small.TButton', font=small, padding=(2, 0))
-        self.tb_hfp = ttk.Checkbutton(dec, text='HFPager', style='Small.Toolbutton', variable=self.var['hfp_enable'],
-                                      command=self.toggle_hfp, width=13)
-        self.tb_hfp.pack(fill='x', pady=(0, 2))
-        self.tb_sel = ttk.Checkbutton(dec, text='Selcall', style='Small.Toolbutton', variable=self.var['sel_enable'],
-                                      command=self.toggle_sel, width=13)
-        self.tb_sel.pack(fill='x', pady=(0, 2))
-        # «Слушать» — the same listening as on the HF Selcall and HFPager tabs (one state, three buttons)
-        self.btn_listen_main = ttk.Button(dec, text=T('Слушать'), width=13, style='Small.TButton',
-                                          command=self.core.toggle_listen)
-        self.btn_listen_main.pack(fill='x', pady=(0, 4))
+        # «Слушать» (the same listening as on the HF Selcall and HFPager tabs) and under it «ПЕРЕДАЧА» (voice PTT
+        # from the external microphone), twice as tall, red while transmitting; the decoders are switched on
+        # their tabs
+        self.btn_listen_main = ttk.Button(dec, text=T('Слушать'), width=13, command=self.core.toggle_listen)
+        self.btn_listen_main.pack(fill='x', pady=(0, 6))
         self.listen_btns = [self.btn_listen_main]
-        # PTT: voice transmission from the external microphone; red while transmitting
-        self.btn_ptt = tk.Button(dec, text='PTT', font=('TkDefaultFont', 12, 'bold'), height=1, width=10,
+        self.btn_ptt = tk.Button(dec, text=T('ПЕРЕДАЧА'), font=('TkDefaultFont', 11, 'bold'), width=10,
                                  relief='raised', borderwidth=2, takefocus=0)
         self.ptt_bg = self.btn_ptt.cget('background')
         self.ptt_abg = self.btn_ptt.cget('activebackground')
-        self.btn_ptt.pack(fill='x', ipady=4)
+        self.btn_ptt.pack(fill='x', ipady=PTT_IPADY)
         self.btn_ptt.bind('<ButtonPress-1>', lambda e: self.ptt_press())
         self.btn_ptt.bind('<ButtonRelease-1>', lambda e: self.ptt_release())
         self.update_ptt_button()
-        self.update_decoder_buttons()
         self.mon_bar, self.mon_fixed = bar, (lamp_fr, meter, clk, dec)
         bar.bind('<Configure>', lambda e: self.fit_monitor())
 
@@ -1174,6 +1164,8 @@ class App:
         g = ttk.LabelFrame(f, text=T('Параметры HFPager'), padding=6)
         g.pack(fill='x')
         rows = [
+            ('', ttk.Checkbutton(g, text=T('Приём HFPager'), variable=self.var['hfp_enable'],
+                                 command=self.toggle_hfp)),
             (T('Мой ID (0…65535):'), ttk.Entry(g, textvariable=self.var['my_id'], width=8)),
             (T('Скорость передачи, Бод:'), ttk.Combobox(g, textvariable=self.var['speed'], values=list(R.M.SPEEDS),
                                                          width=7, state='readonly')),
@@ -1271,7 +1263,7 @@ class App:
         r = ttk.Frame(g)
         r.pack(fill='x')
         ttk.Checkbutton(r, text=T('Приём Selcall'), variable=self.var['sel_enable'],
-                        command=self.restart_rx).pack(side='left', padx=4)
+                        command=self.toggle_sel).pack(side='left', padx=4)
         ttk.Label(r, text=T('Мой Selcall ID:')).pack(side='left', padx=(12, 4))
         ttk.Entry(r, textvariable=self.var['sel_my_id'], width=8).pack(side='left')
         ttk.Label(r, text=T('Преамбула, с (по умолчанию 6):')).pack(side='left', padx=(12, 4))
@@ -1391,7 +1383,7 @@ class App:
         ttk.Checkbutton(r, text=T('Слушать эфир после передачи голосом, с:'), variable=self.var['voice_listen_after'],
                         command=self.apply).pack(side='left', padx=4)
         ttk.Entry(r, textvariable=self.var['voice_listen_seconds'], width=5).pack(side='left')
-        ttk.Label(mf, text=T('Кнопка PTT на главной странице (и горячая клавиша) включает передачу: звук '
+        ttk.Label(mf, text=T('Кнопка «ПЕРЕДАЧА» на главной странице (и горячая клавиша) включает передачу: звук '
                              'микрофона идёт на «Выход (передача)», трансивер переключается методом PTT ниже. '
                              'Если микрофон «Выключено», PTT только включает передачу трансивера (говорите в его '
                              'микрофон). Ограничение — наибольшая длительность одной передачи (0 — без '
@@ -1719,20 +1711,11 @@ class App:
         self.core.save()
         self.add('[%s] • %s' % (self.now(), T('Декодер HFPager включён') if self.core.s['hfp_enable'] else
                                 T('Декодер HFPager выключен')), 'sys')
-        self.update_decoder_buttons()
 
     def toggle_sel(self):
         self.restart_rx()                       # pull() takes sel_enable from the same variable
         self.add('[%s] • %s' % (self.now(), T('Декодер Selcall включён') if self.core.s['sel_enable'] else
                                 T('Декодер Selcall выключен')), 'sys')
-        self.update_decoder_buttons()
-
-    def update_decoder_buttons(self):
-        try:
-            self.tb_hfp.configure(text=('HFPager ' + (T('ВКЛ') if self.var['hfp_enable'].get() else T('ВЫКЛ'))))
-            self.tb_sel.configure(text=('Selcall ' + (T('ВКЛ') if self.var['sel_enable'].get() else T('ВЫКЛ'))))
-        except Exception:
-            pass
 
     def update_scan_calc(self):
         c = self.core
