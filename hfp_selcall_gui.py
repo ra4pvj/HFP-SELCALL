@@ -714,14 +714,12 @@ class App:
             self.meter.create_rectangle(x_(a), 0, x_(b), METER_H, fill=col, outline='')
         self.meter_bar = self.meter.create_rectangle(0, 2, 0, METER_H - 2, fill='#2ecc40', outline='')
         self.meter_peak = self.meter.create_line(0, 0, 0, METER_H, fill='#ffffff', width=2)
-        for db in (-60, -48, -36, -24, -12, -3, 0):
+        for db in (-60, -48, -36, -24, -12, 0):     # -3 is the yellow/red border, seen by colour
             self.meter.create_line(x_(db), METER_H, x_(db), METER_H + 3, fill=self.colors()['dim'])
             self.meter.create_text(min(max(x_(db), 8), METER_W - 6), METER_H + 8, text=str(db),
                                    font=('Helvetica', 7), fill=self.colors()['dim'])
-        row = ttk.Frame(meter)
-        row.pack(anchor='w')
-        ttk.Label(row, textvariable=self.var['level_txt'], width=11).pack(side='left')
-        ttk.Label(row, textvariable=self.var['clip'], foreground='#e02020').pack(side='left')
+        # no level figure under the scale (the scale is enough); only the overload warning appears there
+        ttk.Label(meter, textvariable=self.var['clip'], foreground='#e02020').pack(anchor='w')
 
         # spectrum (waterfall) 300..3000 Hz, newest line on top. The history keeps the 270 bins of 10 Hz; the picture
         # is drawn as wide as the window leaves for it (WF_MIN..WF_MAX px), so the strip never gets wider than
