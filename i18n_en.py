@@ -833,4 +833,40 @@ EN = {
         'Transmission: %s — retrying',
     'Запрос %s от ID %d с запросом подтверждения — отвечаю подтверждением':
         '%s request from ID %d with an acknowledgement request — answering with the acknowledgement',
+    'Пока нажата':
+        'While pressed',
+    'Нажал — вкл., ещё раз — выкл.':
+        'Press on, press again off',
+    'Горячая клавиша':
+        'Hot key',
+    'Микрофон и настройки…':
+        'Microphone and settings…',
+    'Микрофон и PTT (голосовая передача)':
+        'Microphone and PTT (voice transmission)',
+    'Режим: ':
+        'Mode: ',
+    'Микрофон:':
+        'Microphone:',
+    'Усиление, дБ:':
+        'Gain, dB:',
+    'Режим PTT:':
+        'PTT mode:',
+    'Горячая клавиша:':
+        'Hot key:',
+    'Ограничение, с:':
+        'Time limit, s:',
+    'Слушать эфир после передачи голосом, с:':
+        'Listen to the air after a voice transmission, s:',
+    'Кнопка PTT на главной странице (и горячая клавиша) включает передачу: звук микрофона идёт на «Выход (передача)», трансивер переключается методом PTT ниже. Если микрофон «Выключено», PTT только включает передачу трансивера (говорите в его микрофон). Ограничение — наибольшая длительность одной передачи (0 — без ограничения).':
+        'The PTT button on the main page (and the hot key) starts a transmission: the microphone sound goes to «Output (TX)», the transceiver is keyed by the PTT method below. With the microphone «Off», PTT only keys the transceiver (speak into its own microphone). The time limit is the longest single transmission (0 — no limit).',
+    'Передача голосом (PTT)…':
+        'Voice transmission (PTT)…',
+    'Нет ни микрофона, ни управления PTT: выберите их на вкладке «Трансивер и аудио».':
+        'Neither a microphone nor PTT control: choose them on the «Transceiver & audio» tab.',
+    'Микрофон и выход передачи не работают на общей частоте дискретизации':
+        'The microphone and the TX output have no common sample rate',
+    'Передача голосом остановлена: превышено ограничение %.0f с':
+        'Voice transmission stopped: the %.0f s limit was reached',
+    '%s  ГОЛОС: передача %.0f с%s':
+        '%s  VOICE: transmission %.0f s%s',
 }

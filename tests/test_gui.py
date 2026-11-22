@@ -271,6 +271,66 @@ def main():
     app.open_help()
     app.about()
 
+    # voice PTT: button pressed / released (hold), toggle, hot key from the menu, red while on
+    import tkinter as tkm
+
+    class FakePTT:
+        keyed = False
+
+        def key(self, on):
+            self.keyed = bool(on)
+
+        def unkey_safe(self):
+            self.keyed = False
+    real_ptt, real_cfg, real_apply = core.ptt, core.ptt_cfg, core.ptt_apply
+    core.ptt, core.ptt_cfg, core.ptt_apply = FakePTT(), (lambda: dict(method='RTS')), (lambda: None)
+    app.var['mic_dev'].set('Выключено')
+    app.var['voice_listen_after'].set(False)
+    app.var['ptt_mode'].set('hold')
+    app.apply_ptt()
+    assert core.s['mic_dev'] == '' and core.s['ptt_mode'] == 'hold'
+
+    def wait(cond):
+        t0 = time.time()
+        while not cond() and time.time() - t0 < 5:
+            time.sleep(0.02)
+            app.poll()
+        assert cond()
+    def run_pending():
+        while tkm.AFTERS:
+            fn, a = tkm.AFTERS.pop(0)
+            try:
+                fn(*a)
+            except Exception:
+                pass
+    tkm.AFTERS.clear()
+    app.btn_ptt._binds['<ButtonPress-1>'][0](None)
+    wait(lambda: core.ptt.keyed)
+    assert app.btn_ptt.cget('background') == '#d01010'
+    app.btn_ptt._binds['<ButtonRelease-1>'][0](None)
+    app.btn_ptt._binds['<ButtonPress-1>'][0](None)      # X11 key auto-repeat: release + press at once
+    run_pending()
+    assert core.voice_on                                   # still on
+    app.btn_ptt._binds['<ButtonRelease-1>'][0](None)
+    run_pending()
+    wait(lambda: not core.voice_on)
+    assert not core.ptt.keyed and app.btn_ptt.cget('background') == app.ptt_bg
+    # toggle mode and the hot key (chosen like in the menu)
+    app.var['ptt_mode'].set('toggle')
+    app.var['ptt_hotkey'].set('F9')
+    app.apply_ptt()
+    assert core.s['ptt_hotkey'] == 'F9' and '<KeyPress-F9>' in tkm.ALL_BINDS
+    tkm.ALL_BINDS['<KeyPress-F9>'][-1](None)
+    tkm.ALL_BINDS['<KeyRelease-F9>'][-1](None)
+    wait(lambda: core.ptt.keyed)
+    tkm.ALL_BINDS['<KeyPress-F9>'][-1](None)
+    wait(lambda: not core.voice_on and not core.ptt.keyed)
+    app.var['ptt_hotkey'].set('')
+    app.apply_ptt()
+    assert '<KeyPress-F9>' not in tkm.ALL_BINDS
+    app.var['ptt_mode'].set('hold')
+    app.apply_ptt()
+    core.ptt, core.ptt_cfg, core.ptt_apply = real_ptt, real_cfg, real_apply
     # own IDs in the right corners of the HFPager / Selcall fields follow the settings
     app.var['my_id'].set('4321')
     app.var['sel_my_id'].set('2468')

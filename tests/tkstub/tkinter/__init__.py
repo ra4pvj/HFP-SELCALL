@@ -1,6 +1,7 @@
 """Minimal tkinter stand-in for headless tests (CI has no display): widgets accept any call, variables,
 Text and Notebook keep real state, root.after() callbacks are collected in AFTERS."""
 AFTERS = []
+ALL_BINDS = {}           # bind_all: sequence -> handlers
 CREATED = []
 
 
@@ -76,6 +77,20 @@ class Misc:
         if fn:
             AFTERS.append((fn, a))
         return 'after#%d' % len(AFTERS)
+
+    def after_cancel(self, job):
+        try:
+            i = int(str(job).split('#')[1]) - 1
+            AFTERS[i] = (lambda *a: None, ())
+        except Exception:
+            pass
+
+    def bind_all(self, seq=None, fn=None, add=None):
+        if fn is not None:
+            ALL_BINDS.setdefault(seq, []).append(fn)
+
+    def unbind_all(self, seq):
+        ALL_BINDS.pop(seq, None)
 
     def winfo_class(self):
         return type(self).__name__

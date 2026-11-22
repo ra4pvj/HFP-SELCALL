@@ -28,6 +28,9 @@ from i18n import T
 
 PORT_OFF = 'Выключено'          # port combobox value meaning "no COM port" (stored as '')
 SYS_OUT = 'системный выход'
+PTT_KEYS = ['', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'Pause', 'Scroll_Lock',
+            'Insert', 'Control_R']          # hot keys for the voice PTT ('' = none; F1 is the help)
+PTT_MODES = (('hold', 'Пока нажата'), ('toggle', 'Нажал — вкл., ещё раз — выкл.'))
 
 # second clock: (key, label, offset hours); 'LOCAL' = the computer's time zone
 TIME_ZONES = [('LOCAL', None, None)] + [
@@ -303,6 +306,8 @@ class App:
         self.chat_lines = []                   # (text, tag): kept across rebuilds (language / theme)
         install_clipboard(root, tk)
         root.bind_all('<F1>', lambda e: self.open_help())
+        self.ptt_bound = None                  # the hot key now bound to the voice PTT
+        self.ptt_release_job = None
         self.scroll_canvases = []
         self.install_wheel()
         try:
@@ -419,6 +424,7 @@ class App:
         self.build_hfp_tab()
         self.build_selcall_tab()
         self.build_rig_tab()
+        self.bind_ptt_key()
         self.build_beacon_tab()
         self.build_program_tab()
         # the program always starts on «Чат и сообщения», whatever tab was open when it was closed
@@ -450,6 +456,10 @@ class App:
 
         styles = dict(SE.RING_STYLES)
         self.var = dict(
+            mic_dev=tk.StringVar(value=s.get('mic_dev') or T(PORT_OFF)), mic_gain=sv('mic_gain', '%g'),
+            ptt_mode=tk.StringVar(value=s.get('ptt_mode') or 'hold'),
+            ptt_hotkey=tk.StringVar(value=s.get('ptt_hotkey') or ''), voice_tot=sv('voice_tot', '%g'),
+            voice_listen_after=bv('voice_listen_after'), voice_listen_seconds=sv('voice_listen_seconds', '%g'),
             my_id=sv('my_id'), to_id=sv('to_id'), in_dev=sv('in_dev'), out_dev=sv('out_dev'), speed=sv('speed'),
             f0=sv('f0'), tx_level=tk.DoubleVar(value=s['tx_level']), ptt_delay=sv('ptt_delay'), afc=bv('afc'),
             ack=bv('ack'), auto_ack=bv('auto_ack'), only_mine=bv('only_mine'), sens_db=sv('sens_db'),
@@ -545,11 +555,105 @@ class App:
         v.add_radiobutton(label='Русский', variable=self.m_lang, value='ru', command=lambda: self.set_lang('ru'))
         v.add_radiobutton(label='English', variable=self.m_lang, value='en', command=lambda: self.set_lang('en'))
         m.add_cascade(label=T('Вид'), menu=v)
+        pm = tk.Menu(m, tearoff=0)
+        for val, lbl in PTT_MODES:
+            pm.add_radiobutton(label=T('Режим: ') + T(lbl), variable=self.var['ptt_mode'], value=val,
+                               command=self.apply_ptt)
+        pm.add_separator()
+        hk = tk.Menu(pm, tearoff=0)
+        for k in PTT_KEYS:
+            hk.add_radiobutton(label=k or T(PORT_OFF), variable=self.var['ptt_hotkey'], value=k,
+                               command=self.apply_ptt)
+        pm.add_cascade(label=T('Горячая клавиша'), menu=hk)
+        pm.add_command(label=T('Микрофон и настройки…'), command=lambda: self.show_tab(3))
+        m.add_cascade(label='PTT', menu=pm)
         h = tk.Menu(m, tearoff=0)
         h.add_command(label=T('Инструкция (F1)'), command=self.open_help)
         h.add_command(label=T('О программе'), command=self.about)
         m.add_cascade(label=T('Справка'), menu=h)
         self.root.configure(menu=m)
+
+    # ---- voice PTT
+    def apply_ptt(self):
+        """mode / hot key changed (menu or tab): save, keep the tab and menu in step, rebind the key"""
+        mode = self.var['ptt_mode'].get()
+        if getattr(self, 'var_ptt_mode_lbl', None) is not None:
+            self.var_ptt_mode_lbl.set(T(dict(PTT_MODES).get(mode, PTT_MODES[0][1])))
+        if getattr(self, 'var_ptt_key_lbl', None) is not None:
+            self.var_ptt_key_lbl.set(self.var['ptt_hotkey'].get() or T(PORT_OFF))
+        self.apply()
+        self.bind_ptt_key()
+
+    def show_tab(self, i):
+        try:
+            self.nb.select(self.tab_outer[i])
+        except Exception:
+            pass
+
+    def bind_ptt_key(self):
+        key = self.core.s.get('ptt_hotkey') or ''
+        if key == self.ptt_bound:
+            return
+        if self.ptt_bound:
+            for ev in ('KeyPress', 'KeyRelease'):
+                try:
+                    self.root.unbind_all('<%s-%s>' % (ev, self.ptt_bound))
+                except Exception:
+                    pass
+        self.ptt_bound = None
+        if key:
+            try:
+                self.root.bind_all('<KeyPress-%s>' % key, lambda e: self.ptt_press())
+                self.root.bind_all('<KeyRelease-%s>' % key, lambda e: self.ptt_release())
+                self.ptt_bound = key
+            except Exception:
+                pass
+
+    def ptt_press(self):
+        if self.ptt_release_job is not None:           # key auto-repeat (X11 sends release + press pairs)
+            try:
+                self.root.after_cancel(self.ptt_release_job)
+            except Exception:
+                pass
+            self.ptt_release_job = None
+            return
+        c = self.core
+        if c.s.get('ptt_mode') == 'toggle':
+            if c.voice_on:
+                c.stop_voice()
+                return
+        elif c.voice_on:
+            return
+        self.pull()
+        err = c.start_voice()
+        if err:
+            self.mb.showwarning('PTT', err)
+        self.update_ptt_button()
+
+    def ptt_release(self):
+        if self.core.s.get('ptt_mode') == 'toggle':
+            return
+        if self.ptt_release_job is not None:
+            return
+        self.ptt_release_job = self.root.after(60, self._ptt_release_now)
+
+    def _ptt_release_now(self):
+        self.ptt_release_job = None
+        self.core.stop_voice()
+
+    def update_ptt_button(self):
+        b = getattr(self, 'btn_ptt', None)
+        if b is None:
+            return
+        on = self.core.voice_on
+        try:
+            b.configure(background='#d01010' if on else self.ptt_bg,
+                        activebackground='#e83030' if on else self.ptt_abg,
+                        foreground='#ffffff' if on else 'black',
+                        activeforeground='#ffffff' if on else 'black',
+                        relief='sunken' if on else 'raised')
+        except Exception:
+            pass
 
     def own_id_var(self, key, fmt):
         """a label variable showing the own ID as it is typed on the HFPager / HF Selcall tab"""
@@ -644,16 +748,30 @@ class App:
         clk.grid(row=0, column=6)
         dec = ttk.Frame(bar)
         dec.grid(row=0, column=8, sticky='e')
-        self.tb_hfp = ttk.Checkbutton(dec, text='HFPager', style='Toolbutton', variable=self.var['hfp_enable'],
+        # decoders and «Слушать»: three equal small buttons; under them the larger PTT button
+        small = ('TkDefaultFont', 8)
+        self.ttk.Style(self.root).configure('Small.Toolbutton', font=small, padding=(2, 0))
+        self.ttk.Style(self.root).configure('Small.TButton', font=small, padding=(2, 0))
+        self.tb_hfp = ttk.Checkbutton(dec, text='HFPager', style='Small.Toolbutton', variable=self.var['hfp_enable'],
                                       command=self.toggle_hfp, width=13)
-        self.tb_hfp.pack(fill='x', pady=(0, 6))
-        self.tb_sel = ttk.Checkbutton(dec, text='Selcall', style='Toolbutton', variable=self.var['sel_enable'],
+        self.tb_hfp.pack(fill='x', pady=(0, 2))
+        self.tb_sel = ttk.Checkbutton(dec, text='Selcall', style='Small.Toolbutton', variable=self.var['sel_enable'],
                                       command=self.toggle_sel, width=13)
-        self.tb_sel.pack(fill='x')
+        self.tb_sel.pack(fill='x', pady=(0, 2))
         # «Слушать» — the same listening as on the HF Selcall and HFPager tabs (one state, three buttons)
-        self.btn_listen_main = ttk.Button(dec, text=T('Слушать'), width=13, command=self.core.toggle_listen)
-        self.btn_listen_main.pack(fill='x', pady=(6, 0))
+        self.btn_listen_main = ttk.Button(dec, text=T('Слушать'), width=13, style='Small.TButton',
+                                          command=self.core.toggle_listen)
+        self.btn_listen_main.pack(fill='x', pady=(0, 4))
         self.listen_btns = [self.btn_listen_main]
+        # PTT: voice transmission from the external microphone; red while transmitting
+        self.btn_ptt = tk.Button(dec, text='PTT', font=('TkDefaultFont', 12, 'bold'), height=1, width=10,
+                                 relief='raised', borderwidth=2, takefocus=0)
+        self.ptt_bg = self.btn_ptt.cget('background')
+        self.ptt_abg = self.btn_ptt.cget('activebackground')
+        self.btn_ptt.pack(fill='x', ipady=4)
+        self.btn_ptt.bind('<ButtonPress-1>', lambda e: self.ptt_press())
+        self.btn_ptt.bind('<ButtonRelease-1>', lambda e: self.ptt_release())
+        self.update_ptt_button()
         self.update_decoder_buttons()
         self.mon_bar, self.mon_fixed = bar, (lamp_fr, meter, clk, dec)
         bar.bind('<Configure>', lambda e: self.fit_monitor())
@@ -1243,6 +1361,43 @@ class App:
                             'сигнала в зелёной зоне (ниже −12 dBFS), жёлтая −12…−3, красная выше −3 dBFS.'),
                   foreground=dim, wraplength=880).grid(row=3, column=0, columnspan=4, sticky='w', padx=4)
 
+        mf = ttk.LabelFrame(f, text=T('Микрофон и PTT (голосовая передача)'), padding=6)
+        mf.pack(fill='x', pady=(8, 0))
+        ttk.Label(mf, text=T('Микрофон:')).grid(row=0, column=0, sticky='e', padx=4, pady=3)
+        self.cb_mic = ttk.Combobox(mf, textvariable=self.var['mic_dev'], width=48, state='readonly')
+        self.cb_mic.grid(row=0, column=1, columnspan=3, sticky='w')
+        self.cb_mic.bind('<<ComboboxSelected>>', lambda e: self.apply())
+        ttk.Label(mf, text=T('Усиление, дБ:')).grid(row=0, column=4, sticky='e', padx=(8, 2))
+        ttk.Spinbox(mf, from_=-30, to=30, increment=1, textvariable=self.var['mic_gain'], width=5,
+                    command=self.apply).grid(row=0, column=5, sticky='w')
+        ttk.Label(mf, text=T('Режим PTT:')).grid(row=1, column=0, sticky='e', padx=4, pady=3)
+        self.var_ptt_mode_lbl = tk.StringVar(value=T(dict(PTT_MODES).get(self.var['ptt_mode'].get(), PTT_MODES[0][1])))
+        cm = ttk.Combobox(mf, textvariable=self.var_ptt_mode_lbl, values=[T(l) for _v, l in PTT_MODES], width=30,
+                          state='readonly')
+        cm.grid(row=1, column=1, sticky='w')
+        cm.bind('<<ComboboxSelected>>', lambda e: (self.var['ptt_mode'].set(
+            [v for v, l in PTT_MODES if T(l) == self.var_ptt_mode_lbl.get()][0]), self.apply_ptt()))
+        ttk.Label(mf, text=T('Горячая клавиша:')).grid(row=1, column=2, sticky='e', padx=(8, 2))
+        self.var_ptt_key_lbl = tk.StringVar(value=self.var['ptt_hotkey'].get() or T(PORT_OFF))
+        ck = ttk.Combobox(mf, textvariable=self.var_ptt_key_lbl, values=[k or T(PORT_OFF) for k in PTT_KEYS],
+                          width=12, state='readonly')
+        ck.grid(row=1, column=3, sticky='w')
+        ck.bind('<<ComboboxSelected>>', lambda e: (self.var['ptt_hotkey'].set(
+            '' if self.var_ptt_key_lbl.get() == T(PORT_OFF) else self.var_ptt_key_lbl.get()), self.apply_ptt()))
+        ttk.Label(mf, text=T('Ограничение, с:')).grid(row=1, column=4, sticky='e', padx=(8, 2))
+        ttk.Entry(mf, textvariable=self.var['voice_tot'], width=6).grid(row=1, column=5, sticky='w')
+        r = ttk.Frame(mf)
+        r.grid(row=3, column=0, columnspan=6, sticky='w', pady=(4, 0))
+        ttk.Checkbutton(r, text=T('Слушать эфир после передачи голосом, с:'), variable=self.var['voice_listen_after'],
+                        command=self.apply).pack(side='left', padx=4)
+        ttk.Entry(r, textvariable=self.var['voice_listen_seconds'], width=5).pack(side='left')
+        ttk.Label(mf, text=T('Кнопка PTT на главной странице (и горячая клавиша) включает передачу: звук '
+                             'микрофона идёт на «Выход (передача)», трансивер переключается методом PTT ниже. '
+                             'Если микрофон «Выключено», PTT только включает передачу трансивера (говорите в его '
+                             'микрофон). Ограничение — наибольшая длительность одной передачи (0 — без '
+                             'ограничения).'), foreground=dim, wraplength=880).grid(
+            row=2, column=0, columnspan=6, sticky='w', padx=4, pady=(4, 0))
+
         pf = ttk.LabelFrame(f, text=T('Управление передачей (PTT)'), padding=6)
         pf.pack(fill='x', pady=8)
         r = ttk.Frame(pf)
@@ -1736,6 +1891,16 @@ class App:
         except ValueError:
             pass
         s['in_dev'] = v['in_dev'].get()
+        md = v['mic_dev'].get()
+        s['mic_dev'] = '' if md in (PORT_OFF, T(PORT_OFF)) else md
+        s['ptt_mode'] = v['ptt_mode'].get() if v['ptt_mode'].get() in dict(PTT_MODES) else 'hold'
+        s['ptt_hotkey'] = v['ptt_hotkey'].get() if v['ptt_hotkey'].get() in PTT_KEYS else ''
+        s['voice_listen_after'] = bool(v['voice_listen_after'].get())
+        for k, lo, hi in (('mic_gain', -30.0, 30.0), ('voice_tot', 0.0, 3600.0), ('voice_listen_seconds', 5.0, 600.0)):
+            try:
+                s[k] = max(lo, min(hi, float(str(v[k].get()).replace(',', '.'))))
+            except ValueError:
+                pass
         s['out_dev'] = v['out_dev'].get()
         s['speed'] = v['speed'].get()
         num('f0', 300, 2000)
@@ -1833,6 +1998,8 @@ class App:
         self.cb_in['values'] = [l for _, l in ins]
         self.cb_out['values'] = [l for _, l in outs]
         self.cb_ring['values'] = [T(SYS_OUT)] + [l for _, l in outs]
+        if getattr(self, 'cb_mic', None) is not None:
+            self.cb_mic['values'] = [T(PORT_OFF)] + [l for _, l in ins]
         if not self.var['in_dev'].get() and ins:
             self.var['in_dev'].set(ins[0][1])
         if not self.var['out_dev'].get() and outs:
@@ -2586,6 +2753,13 @@ class App:
                 'mine')
             self.var['status'].set(T('Передача…'))
             self.set_tx_buttons(True)
+        elif kind == 'voice':
+            on, err = item[1], item[2]
+            self.update_ptt_button()
+            self.set_tx_buttons(on)
+            self.var['status'].set(T('Передача голосом (PTT)…') if on else T('Ожидание'))
+            if err:
+                add('[%s] • PTT: %s' % (now(), err), 'sys')
         elif kind == 'tx_done':
             self.set_tx_buttons(False)
             self.var['status'].set(T('Ожидание'))
@@ -2650,6 +2824,11 @@ class App:
             except Exception:
                 pass
             core.save()
+            if core.voice_on:                    # voice TX: release PTT before closing
+                core.stop_voice()
+                t0 = time.time()
+                while core.voice_on and time.time() - t0 < 3:
+                    time.sleep(0.05)
             if core.scan_on:                     # stop and give the transceiver its frequency back first
                 core.stop_scan()
                 th = core._scan_thread

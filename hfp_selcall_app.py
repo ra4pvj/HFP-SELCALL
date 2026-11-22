@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.3.0'
+APP_VERSION = '0.4.0-beta1'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -60,7 +60,9 @@ def _log_dir():
 OUTBOX_DEFAULT = os.path.join(_log_dir(), 'outbox.txt')
 LOG_FILE = os.path.join(_log_dir(), 'messages.txt')      # human-readable journal of ALL messages
 
-DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='', speed='5.86', f0=1611.4, tx_level=0.5,
+DEFAULTS = dict(my_id=1, to_id=1, in_dev='', out_dev='',
+                mic_dev='', mic_gain=0.0, ptt_mode='hold', ptt_hotkey='', voice_tot=300.0,
+                voice_listen_after=True, voice_listen_seconds=60.0, speed='5.86', f0=1611.4, tx_level=0.5,
                 ptt_delay=0.5, afc=True, ack=False, counter=0, sens_db=4.0, auto_ack=False, only_mine=False,
                 ptt_method='none', ptt_port='', ptt_baud=9600, ptt_invert=False,
                 icom_model='IC-7300', icom_addr='94', kenwood_variant='TX;',
@@ -224,6 +226,8 @@ class Core:
         self.bcn_next = None              # beacon: unix time of the next one, for the GUI
         self.bcn_scan_pending = False     # beacon due while scanning: the scanner goes to the beacon channel
         self.cat_tuning = False           # a channel button is retuning the transceiver (no frequency polling)
+        self.voice_on = False             # voice transmission (external microphone -> transceiver, PTT keyed)
+        self._voice_stop = threading.Event()
         self.last_activity = 0.0          # last signal / decode / own TX (scanning holds on a channel while recent)
         self.scan_on = False
         self.scan_state = 'off'           # off | scan | hold
@@ -1560,7 +1564,163 @@ class Core:
             elif listen_was and listen_was >= 5.0:
                 self.start_listen(listen_was)
 
+    # ---- voice: the external microphone through the sound card to the transceiver, PTT held
+    def mic_rate(self, mic, out):
+        """a sample rate both the microphone and the TX output accept"""
+        ci = getattr(self.sd, 'check_input_settings', None)
+        co = getattr(self.sd, 'check_output_settings', None)
+        for fs in (self.fs, 48000, 44100, 16000, 8000):
+            try:
+                if ci is not None:
+                    ci(device=mic, samplerate=fs, channels=1, dtype='float32')
+                if co is not None:
+                    co(device=out, samplerate=fs, channels=1, dtype='float32')
+                return fs
+            except Exception:
+                continue
+        return None
+
+    def start_voice(self):
+        """PTT on: the transceiver transmits; with a microphone chosen, its sound goes to the TX output"""
+        if self.voice_on:
+            return None
+        if self.tx_busy:
+            return T('Передача уже идёт.')
+        mic = str(self.s.get('mic_dev') or '')
+        if mic and self.sd is None:
+            return T('Звуковая библиотека недоступна: %s') % SD_ERROR
+        if not mic and self.ptt_cfg()['method'] == 'none':
+            return T('Нет ни микрофона, ни управления PTT: выберите их на вкладке «Трансивер и аудио».')
+        self.tx_busy = True
+        self.voice_on = True
+        self._voice_stop.clear()
+        self.q.put(('voice', True, None))
+        threading.Thread(target=self._voice_run, daemon=True).start()
+        return None
+
+    def stop_voice(self):
+        if self.voice_on:
+            self._voice_stop.set()
+
+    def toggle_voice(self):
+        if self.voice_on:
+            self.stop_voice()
+            return None
+        return self.start_voice()
+
+    def _voice_run(self):
+        import collections
+        self.ringer.stop()
+        listen_was = None
+        if self.listener.active:
+            listen_was = 'manual' if self.listen_manual else max(0.0, self.listen_until - time.time())
+            if self.listen_timer is not None:
+                self.listen_timer.cancel()
+                self.listen_timer = None
+            self.listener.stop()
+            self.q.put(('listen_state',))
+        if self.engine is not None:
+            self.engine.pause(True)
+        sel = self.sel
+        if sel is not None:
+            sel.mute(True)
+        err = None
+        keyed = False
+        streams = []
+        t0 = time.time()
+        try:
+            if self.ptt_cfg()['method'] != 'none':
+                pp = self.s.get('ptt_port') or ''
+                if pp and self.ext.port == pp:
+                    self.ext_reset()
+                e = self.ptt_apply() or self.ptt.key(True)
+                if e:
+                    err = T('PTT: %s – передача отменена') % e
+                    return
+                keyed = True
+            mic_lbl = str(self.s.get('mic_dev') or '')
+            if mic_lbl:
+                mic, out = self._idx(mic_lbl), self._idx(self.s['out_dev'])
+                fs = self.mic_rate(mic, out)
+                if fs is None:
+                    err = T('Микрофон и выход передачи не работают на общей частоте дискретизации')
+                    return
+                gain = 10 ** (float(self.s.get('mic_gain') or 0.0) / 20.0)
+                buf = collections.deque()
+                maxlen = int(0.25 * fs)              # at most 0.25 s queued: the voice stays live
+                state = dict(n=0)
+
+                def cb_in(indata, frames, ti, status):
+                    x = np.clip(indata[:, 0] * gain, -1.0, 1.0).astype(np.float32)
+                    buf.append(x)
+                    state['n'] += len(x)
+                    while state['n'] > maxlen and buf:
+                        state['n'] -= len(buf.popleft())
+
+                pend = [np.zeros(0, np.float32)]
+
+                def cb_out(outdata, frames, ti, status):
+                    x = pend[0]
+                    while len(x) < frames and buf:
+                        y = buf.popleft()
+                        state['n'] -= len(y)
+                        x = np.concatenate([x, y])
+                    if len(x) >= frames:
+                        outdata[:, 0] = x[:frames]
+                        pend[0] = x[frames:]
+                    else:
+                        outdata[:, 0] = 0.0
+                        outdata[:len(x), 0] = x
+                        pend[0] = np.zeros(0, np.float32)
+                self.voice_io = (cb_in, cb_out)        # for the tests
+                si = self.sd.InputStream(device=mic, samplerate=fs, channels=1, dtype='float32',
+                                         blocksize=int(fs * 0.02), callback=cb_in)
+                so = self.sd.OutputStream(device=out, samplerate=fs, channels=1, dtype='float32',
+                                          blocksize=int(fs * 0.02), callback=cb_out)
+                streams = [si, so]
+                si.start()
+                so.start()
+            tot = float(self.s.get('voice_tot') or 0)
+            while not self._voice_stop.wait(0.1):
+                if tot > 0 and time.time() - t0 >= tot:
+                    err = T('Передача голосом остановлена: превышено ограничение %.0f с') % tot
+                    break
+        except Exception as ex:
+            err = str(ex)
+        finally:
+            for st in streams:
+                try:
+                    st.stop()
+                    st.close()
+                except Exception:
+                    pass
+            if keyed or self.ptt.keyed:
+                time.sleep(0.05)
+                uerr = self.ptt.unkey_safe()
+                if uerr:
+                    err = ((err + '; ') if err else '') + T('НЕ УДАЛОСЬ СНЯТЬ PTT: %s – выключите передачу вручную!') % uerr
+            time.sleep(0.3)
+            if self.engine is not None:
+                self.engine.pause(False)
+            if sel is not None:
+                sel.mute(False)
+            self.voice_on = False
+            self.last_activity = time.time()
+            self.tx_busy = False
+            self.log(T('%s  ГОЛОС: передача %.0f с%s') % (self._stamp(), time.time() - t0,
+                                                          ('  — ' + err) if err else ''))
+            self.q.put(('voice', False, err))
+            # then listen to the air (the answer), like after a decoder transmission
+            if listen_was == 'manual':
+                self.listen_manual = False
+                self.toggle_listen()
+            elif self.s.get('voice_listen_after', True) and not err:
+                self.start_listen(float(self.s.get('voice_listen_seconds') or 60))
+            elif listen_was and listen_was >= 5.0:
+                self.start_listen(listen_was)
+
     def abort_tx(self):
+        self.stop_voice()
         try:
             self.sd.stop()
         except Exception:

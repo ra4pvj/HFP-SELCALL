@@ -719,6 +719,79 @@ def test_tx_output(tmp):
           'PortAudio opening error retried once')
 
 
+def test_voice_ptt(tmp):
+    """voice PTT: microphone -> TX output with gain, PTT keyed, listening afterwards, time limit, refusals"""
+    core, q = make_core(tmp)
+    assert core.start_rx()
+
+    class FakePTT:
+        keyed = False
+
+        def key(self, on):
+            self.keyed = bool(on)
+
+        def unkey_safe(self):
+            self.keyed = False
+    core.ptt = FakePTT()
+    core.ptt_apply = lambda: None
+    core.ptt_cfg = lambda: dict(method='RTS')
+    core.s.update(mic_dev='0: Fake [Fake API]', out_dev='0: Fake [Fake API]', mic_gain=6.0, voice_tot=0,
+                  voice_listen_after=True, voice_listen_seconds=40)
+    if core.listener.active:
+        core.toggle_listen()
+    n_in, n_out = len(FakeSD.streams), len(FakeSD.outs)
+    assert core.start_voice() is None and core.voice_on and core.tx_busy
+    t0 = time.time()
+    while len(FakeSD.outs) == n_out and time.time() - t0 < 5:
+        time.sleep(0.02)
+    assert core.ptt.keyed and len(FakeSD.streams) > n_in and len(FakeSD.outs) > n_out
+    cb_in, cb_out = core.voice_io
+    cb_in(np.full((960, 1), 0.1, np.float32), 960, None, None)
+    out = np.zeros((960, 1), np.float32)
+    cb_out(out, 960, None, None)
+    assert abs(out[:, 0].mean() - 0.1 * 10 ** (6 / 20.0)) < 1e-3, out[:3, 0]
+    cb_out(out, 960, None, None)                         # nothing queued: silence, not a stale block
+    assert not out.any()
+    assert core.start_voice() is None and core.send(5, 'X') is not None     # busy: no data TX meanwhile
+    core.stop_voice()
+    t0 = time.time()
+    while core.voice_on and time.time() - t0 < 5:
+        time.sleep(0.02)
+    assert not core.voice_on and not core.tx_busy and not core.ptt.keyed
+    assert core.listener.active and core.listen_timer is not None, 'listening after the voice TX'
+    core.toggle_listen()
+    ev = [i for i in drain(q, 0.3) if i[0] == 'voice']
+    assert [e[1] for e in ev] == [True, False] and ev[-1][2] is None, ev
+    # time limit: stops by itself, PTT released, no listening after an error
+    core.s['voice_tot'] = 0.4
+    assert core.start_voice() is None
+    t0 = time.time()
+    while core.voice_on and time.time() - t0 < 5:
+        time.sleep(0.05)
+    assert not core.voice_on and not core.ptt.keyed and not core.listener.active
+    ev = [i for i in drain(q, 0.3) if i[0] == 'voice']
+    assert ev[-1][2] and '0' in ev[-1][2], ev
+    # PTT only (no microphone): keys the transceiver, opens no audio
+    core.s.update(mic_dev='', voice_tot=0, voice_listen_after=False)
+    n_out = len(FakeSD.outs)
+    assert core.toggle_voice() is None and core.voice_on
+    time.sleep(0.3)
+    assert core.ptt.keyed and len(FakeSD.outs) == n_out
+    core.toggle_voice()
+    t0 = time.time()
+    while core.voice_on and time.time() - t0 < 5:
+        time.sleep(0.05)
+    assert not core.ptt.keyed
+    # neither microphone nor PTT: refused
+    core.ptt_cfg = lambda: dict(method='none')
+    assert core.start_voice() and not core.voice_on
+    core.stop_rx()
+    core.s.update(mic_dev='', voice_listen_after=True, voice_tot=300.0)
+    core.save()
+    print('OK  voice PTT: mic -> TX output (+6 dB), PTT keyed and released, listening after it, '
+          'time limit, PTT-only without a microphone, refusals')
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         test_scan_timing()
@@ -732,4 +805,5 @@ if __name__ == '__main__':
         test_auto_ack(tmp)
         test_beacon_scan_poll(tmp)
         test_tx_output(tmp)
+        test_voice_ptt(tmp)
     print('ALL OK')
