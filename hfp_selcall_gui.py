@@ -555,7 +555,9 @@ class App:
         self.m_lang = tk.StringVar(value=self.core.s.get('lang', 'ru'))
         v.add_radiobutton(label='Русский', variable=self.m_lang, value='ru', command=lambda: self.set_lang('ru'))
         v.add_radiobutton(label='English', variable=self.m_lang, value='en', command=lambda: self.set_lang('en'))
-        m.add_cascade(label=T('Вид'), menu=v)
+        # the menu holds only the language now; not called «View»: macOS adds its own «Show Tab Bar» /
+        # full-screen items to an English «View» menu
+        m.add_cascade(label=T('Язык'), menu=v)
         pm = tk.Menu(m, tearoff=0)
         for val, lbl in PTT_MODES:
             pm.add_radiobutton(label=T('Режим: ') + T(lbl), variable=self.var['ptt_mode'], value=val,
@@ -753,7 +755,7 @@ class App:
         self.btn_listen_main = ttk.Button(dec, text=T('Слушать'), width=13, command=self.core.toggle_listen)
         self.btn_listen_main.pack(fill='x', pady=(0, 6))
         self.listen_btns = [self.btn_listen_main]
-        self.btn_ptt = tk.Button(dec, text=T('ПЕРЕДАЧА'), font=('TkDefaultFont', 11, 'bold'), width=10,
+        self.btn_ptt = tk.Button(dec, text=T('ПЕРЕДАЧА'), font='TkDefaultFont', width=10,
                                  relief='raised', borderwidth=2, takefocus=0)
         self.ptt_bg = self.btn_ptt.cget('background')
         self.ptt_abg = self.btn_ptt.cget('activebackground')
@@ -987,7 +989,7 @@ class App:
         # A grid of equal columns: the buttons share the window width, so all 6 stay visible in a narrow window
         crow = ttk.Frame(f)
         crow.pack(side='bottom', fill='x', pady=(4, 0))
-        self.tb_scan = ttk.Checkbutton(crow, text=T('СКАН'), style='Toolbutton', variable=self.var['scan_btn'],
+        self.tb_scan = ttk.Checkbutton(crow, text=T('СКАНИРОВАНИЕ'), style='Toolbutton', variable=self.var['scan_btn'],
                                        command=self.toggle_scan, width=1)
         self.tb_scan.grid(row=0, column=0, sticky='ew', padx=(0, 8))
         crow.columnconfigure(0, weight=1, uniform='ch', minsize=60)
@@ -1738,8 +1740,8 @@ class App:
             want = c.cur_channel if c.cur_channel is not None else -1
             if self.var['chan_sel'].get() != want:
                 self.var['chan_sel'].set(want)
-            self.tb_scan.configure(text=(T('СКАН') + (' %d' % (c.scan_ch + 1) if ch_ else '') +
-                                         (' ■' if c.scan_state == 'hold' else '')) if c.scan_on else T('СКАН'))
+            self.tb_scan.configure(text=(T('СКАНИРОВАНИЕ') + (' %d' % (c.scan_ch + 1) if ch_ else '') +
+                                         (' ■' if c.scan_state == 'hold' else '')) if c.scan_on else T('СКАНИРОВАНИЕ'))
         except Exception:
             pass
         try:
