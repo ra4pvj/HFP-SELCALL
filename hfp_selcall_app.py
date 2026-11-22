@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.4.0-beta1'
+APP_VERSION = '0.4.0-beta2'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -1608,8 +1608,63 @@ class Core:
             return None
         return self.start_voice()
 
-    def _voice_run(self):
+    def _open_voice_streams(self, mic, out, fs, gain):
+        """microphone -> TX output with the least delay: one duplex stream (input and output in the same
+        callback, no queue) when the driver allows it; otherwise two streams with the smallest jitter queue"""
+        def cb_duplex(indata, outdata, frames, ti, status):
+            outdata[:, 0] = np.clip(indata[:, 0] * gain, -1.0, 1.0)
+        Stream = getattr(self.sd, 'Stream', None)
+        if Stream is not None:
+            st = None
+            try:
+                st = Stream(device=(mic, out), samplerate=fs, channels=(1, 1), dtype='float32', blocksize=0,
+                            latency='low', callback=cb_duplex)
+                st.start()
+                self.voice_io = ('duplex', cb_duplex)
+                return [st]
+            except Exception:
+                if st is not None:
+                    try:
+                        st.close()
+                    except Exception:
+                        pass
         import collections
+        buf = collections.deque()
+        cap = int(0.04 * fs)                 # at most 40 ms waiting: older sound is dropped, the voice stays live
+        state = dict(n=0)
+
+        def cb_in(indata, frames, ti, status):
+            x = np.clip(indata[:, 0] * gain, -1.0, 1.0).astype(np.float32)
+            buf.append(x)
+            state['n'] += len(x)
+            while state['n'] > cap + len(x) and len(buf) > 1:
+                state['n'] -= len(buf.popleft())
+
+        pend = [np.zeros(0, np.float32)]
+
+        def cb_out(outdata, frames, ti, status):
+            x = pend[0]
+            while len(x) < frames and buf:
+                y = buf.popleft()
+                state['n'] -= len(y)
+                x = np.concatenate([x, y])
+            if len(x) >= frames:
+                outdata[:, 0] = x[:frames]
+                pend[0] = x[frames:]
+            else:
+                outdata[:, 0] = 0.0
+                outdata[:len(x), 0] = x
+                pend[0] = np.zeros(0, np.float32)
+        si = self.sd.InputStream(device=mic, samplerate=fs, channels=1, dtype='float32', blocksize=0,
+                                 latency='low', callback=cb_in)
+        so = self.sd.OutputStream(device=out, samplerate=fs, channels=1, dtype='float32', blocksize=0,
+                                  latency='low', callback=cb_out)
+        self.voice_io = ('pair', cb_in, cb_out)
+        si.start()
+        so.start()
+        return [si, so]
+
+    def _voice_run(self):
         self.ringer.stop()
         listen_was = None
         if self.listener.active:
@@ -1646,40 +1701,7 @@ class Core:
                     err = T('Микрофон и выход передачи не работают на общей частоте дискретизации')
                     return
                 gain = 10 ** (float(self.s.get('mic_gain') or 0.0) / 20.0)
-                buf = collections.deque()
-                maxlen = int(0.25 * fs)              # at most 0.25 s queued: the voice stays live
-                state = dict(n=0)
-
-                def cb_in(indata, frames, ti, status):
-                    x = np.clip(indata[:, 0] * gain, -1.0, 1.0).astype(np.float32)
-                    buf.append(x)
-                    state['n'] += len(x)
-                    while state['n'] > maxlen and buf:
-                        state['n'] -= len(buf.popleft())
-
-                pend = [np.zeros(0, np.float32)]
-
-                def cb_out(outdata, frames, ti, status):
-                    x = pend[0]
-                    while len(x) < frames and buf:
-                        y = buf.popleft()
-                        state['n'] -= len(y)
-                        x = np.concatenate([x, y])
-                    if len(x) >= frames:
-                        outdata[:, 0] = x[:frames]
-                        pend[0] = x[frames:]
-                    else:
-                        outdata[:, 0] = 0.0
-                        outdata[:len(x), 0] = x
-                        pend[0] = np.zeros(0, np.float32)
-                self.voice_io = (cb_in, cb_out)        # for the tests
-                si = self.sd.InputStream(device=mic, samplerate=fs, channels=1, dtype='float32',
-                                         blocksize=int(fs * 0.02), callback=cb_in)
-                so = self.sd.OutputStream(device=out, samplerate=fs, channels=1, dtype='float32',
-                                          blocksize=int(fs * 0.02), callback=cb_out)
-                streams = [si, so]
-                si.start()
-                so.start()
+                streams = self._open_voice_streams(mic, out, fs, gain)
             tot = float(self.s.get('voice_tot') or 0)
             while not self._voice_stop.wait(0.1):
                 if tot > 0 and time.time() - t0 >= tot:

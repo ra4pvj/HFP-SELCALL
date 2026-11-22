@@ -745,13 +745,21 @@ def test_voice_ptt(tmp):
     while len(FakeSD.outs) == n_out and time.time() - t0 < 5:
         time.sleep(0.02)
     assert core.ptt.keyed and len(FakeSD.streams) > n_in and len(FakeSD.outs) > n_out
-    cb_in, cb_out = core.voice_io
+    # no duplex stream in this driver -> two streams with a short queue (at most 40 ms waiting)
+    kind, cb_in, cb_out = core.voice_io
+    assert kind == 'pair'
     cb_in(np.full((960, 1), 0.1, np.float32), 960, None, None)
     out = np.zeros((960, 1), np.float32)
     cb_out(out, 960, None, None)
     assert abs(out[:, 0].mean() - 0.1 * 10 ** (6 / 20.0)) < 1e-3, out[:3, 0]
     cb_out(out, 960, None, None)                         # nothing queued: silence, not a stale block
     assert not out.any()
+    for i in range(20):                                  # the output stalls: old sound is dropped
+        cb_in(np.full((480, 1), 0.01 * (i + 1), np.float32), 480, None, None)
+    big = np.zeros((48000, 1), np.float32)
+    cb_out(big, 48000, None, None)
+    queued = int(np.count_nonzero(big[:, 0]))
+    assert queued <= int(0.04 * 48000) + 480 and abs(big[0, 0] - 0.2 * 10 ** (6 / 20.0)) > 0.05, queued
     assert core.start_voice() is None and core.send(5, 'X') is not None     # busy: no data TX meanwhile
     core.stop_voice()
     t0 = time.time()
@@ -762,6 +770,30 @@ def test_voice_ptt(tmp):
     core.toggle_listen()
     ev = [i for i in drain(q, 0.3) if i[0] == 'voice']
     assert [e[1] for e in ev] == [True, False] and ev[-1][2] is None, ev
+    # a duplex stream (one callback): no queue at all
+    class FakeDuplex(FakeStream):
+        def start(self):
+            FakeSD.outs.append(self)
+    FakeSD.Stream = FakeDuplex
+    try:
+        assert core.start_voice() is None
+        t0 = time.time()
+        while (core.voice_io[0] != 'duplex') and time.time() - t0 < 5:
+            time.sleep(0.02)
+        kind, cb = core.voice_io
+        assert kind == 'duplex'
+        out = np.zeros((256, 1), np.float32)
+        cb(np.full((256, 1), 0.2, np.float32), out, 256, None, None)
+        assert abs(out[0, 0] - 0.2 * 10 ** (6 / 20.0)) < 1e-4
+        core.stop_voice()
+        t0 = time.time()
+        while core.voice_on and time.time() - t0 < 5:
+            time.sleep(0.02)
+        if core.listener.active:
+            core.toggle_listen()
+    finally:
+        del FakeSD.Stream
+    drain(q, 0.2)
     # time limit: stops by itself, PTT released, no listening after an error
     core.s['voice_tot'] = 0.4
     assert core.start_voice() is None
@@ -788,7 +820,7 @@ def test_voice_ptt(tmp):
     core.stop_rx()
     core.s.update(mic_dev='', voice_listen_after=True, voice_tot=300.0)
     core.save()
-    print('OK  voice PTT: mic -> TX output (+6 dB), PTT keyed and released, listening after it, '
+    print('OK  voice PTT: duplex stream without a queue, else two streams with <= 40 ms; mic -> TX output (+6 dB), PTT keyed and released, listening after it, '
           'time limit, PTT-only without a microphone, refusals')
 
 
