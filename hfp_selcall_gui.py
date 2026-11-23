@@ -1346,7 +1346,7 @@ class App:
         ttk.Scale(o, from_=0.05, to=1.0, variable=self.var['tx_level'], length=140).pack(side='left')
         ttk.Label(o, text=T('Задержка PTT/VOX, с:')).pack(side='left', padx=(12, 4))
         ttk.Entry(o, textvariable=self.var['ptt_delay'], width=5).pack(side='left')
-        ttk.Button(o, text=T('Обновить список'), command=lambda: (self.refresh_devices(), self.restart_rx())).pack(
+        ttk.Button(o, text=T('Обновить список'), command=self.rescan_audio).pack(
             side='left', padx=(16, 4))
         ttk.Button(o, text=T('Применить'), command=self.apply).pack(side='left', padx=4)
         ttk.Label(a, text=T('Перегрузка входа: отсчёты достигают 98 % полной шкалы (−0,2 dBFS). Держите пики '
@@ -1976,8 +1976,28 @@ class App:
         self.core.save()
         self.core.start_rx()
 
+    def rescan_audio(self):
+        """«Обновить список»: devices plugged in after the start (headphones, USB sound cards) appear"""
+        self.pull()
+        err = self.core.rescan_devices()
+        if err:
+            self.mb.showwarning(T('Звуковые устройства'), err)
+            return
+        s = self.core.s
+        for k in ('in_dev', 'out_dev'):
+            self.var[k].set(s.get(k) or '')
+        self.var['mic_dev'].set(s.get('mic_dev') or T(PORT_OFF))
+        if 'sel_ring_dev' in self.var:
+            self.var['sel_ring_dev'].set(s.get('sel_ring_dev') or T(SYS_OUT))
+        self.refresh_devices()
+
     def refresh_devices(self):
         ins, outs = self.core.devices()
+        c = self.core
+        for k in ('in_dev', 'out_dev'):                 # saved choices shown with the current numbering
+            v = self.var[k].get()
+            if v and c.dev_label(v) != v:
+                self.var[k].set(c.dev_label(v))
         self.cb_in['values'] = [l for _, l in ins]
         self.cb_out['values'] = [l for _, l in outs]
         self.cb_ring['values'] = [T(SYS_OUT)] + [l for _, l in outs]

@@ -46,7 +46,7 @@ def _app_dir():
                         'HFPSelcallApp')
 
 
-APP_VERSION = '0.4.0-beta5'
+APP_VERSION = '0.4.0-beta6'
 APP_NAME = 'HFP+SELCALL'
 COPYRIGHT = '© 2026 RA4PVJ'
 APP_DIR = _app_dir()
@@ -303,25 +303,90 @@ class Core:
         ins, outs = [], []
         if self.sd is None:
             return ins, outs
+        names = {}
         try:
             apis = self.sd.query_hostapis()
             for i, d in enumerate(self.sd.query_devices()):
                 api = apis[d['hostapi']]['name'] if d.get('hostapi') is not None else ''
                 label = '%d: %s [%s]' % (i, d['name'], api)
+                names[i] = label.split(':', 1)[1].strip()
                 if d['max_input_channels'] > 0:
                     ins.append((i, label))
                 if d['max_output_channels'] > 0:
                     outs.append((i, label))
         except Exception as ex:
             self.sys(T('Ошибка опроса звуковых устройств: %s') % ex)
+            return ins, outs
+        self._dev_names = names
         return ins, outs
 
-    @staticmethod
-    def _idx(label):
-        try:
-            return int(str(label).split(':')[0])
-        except Exception:
+    def _idx(self, label):
+        """device index for a saved label «N: name [API]»: the numbering changes when devices are added or
+        removed (headphones plugged in…), so the name decides; the number only when the name is not found"""
+        if label is None or str(label) == '':
             return None
+        s = str(label)
+        try:
+            n = int(s.split(':')[0])
+        except Exception:
+            n = None
+        rest = s.split(':', 1)[1].strip() if ':' in s else s.strip()
+        names = self.__dict__.get('_dev_names')
+        if names is None and self.sd is not None:
+            self.devices()
+            names = self.__dict__.get('_dev_names') or {}
+        if names:
+            if n in names and names[n] == rest:
+                return n
+            for i, r in names.items():
+                if r == rest:
+                    return i
+        return n
+
+    def dev_label(self, label):
+        """the saved label renumbered for the current device list (unchanged if the device is gone)"""
+        if not label:
+            return label
+        i = self._idx(label)
+        names = self.__dict__.get('_dev_names') or {}
+        return '%d: %s' % (i, names[i]) if i in names else label
+
+    def rescan_devices(self):
+        """read the sound devices anew: PortAudio sees only the devices present when it started, so it is
+        restarted (reception stopped and started again); saved choices follow their devices by name"""
+        if self.tx_busy or self.voice_on:
+            return T('Идёт передача — обновите список после неё.')
+        if self.sd is None:
+            return T('Звуковая библиотека недоступна: %s') % SD_ERROR
+        was_rx = self.stream is not None
+        self.ringer.stop()
+        if self.listener.active:
+            if self.listen_timer is not None:
+                self.listen_timer.cancel()
+                self.listen_timer = None
+            self.listener.stop()
+            self.listen_manual = False
+            self.q.put(('listen_state',))
+        self.stop_rx()
+        err = None
+        try:
+            term, init = getattr(self.sd, '_terminate', None), getattr(self.sd, '_initialize', None)
+            if term is not None and init is not None:
+                term()
+                init()
+        except Exception as ex:
+            err = T('Ошибка опроса звуковых устройств: %s') % ex
+        self.__dict__.pop('_dev_names', None)
+        ins, outs = self.devices()
+        for k in ('in_dev', 'out_dev', 'sel_ring_dev', 'mic_dev'):
+            if self.s.get(k):
+                self.s[k] = self.dev_label(self.s[k])
+        self.save()
+        if was_rx:
+            self.start_rx()
+        if not err:
+            self.sys(T('Список звуковых устройств обновлён: входов %d, выходов %d') % (len(ins), len(outs)))
+        return err
 
     # ---- receiving
     def start_rx(self):

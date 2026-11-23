@@ -824,6 +824,49 @@ def test_voice_ptt(tmp):
           'time limit, PTT-only without a microphone, refusals')
 
 
+def test_device_rescan(tmp):
+    """«Обновить список»: PortAudio restarted, devices plugged in later appear, saved choices follow by name"""
+    core, q = make_core(tmp)
+    devs = [dict(name='Mic', max_input_channels=1, max_output_channels=0),
+            dict(name='Speakers', max_input_channels=0, max_output_channels=2)]
+    calls = []
+    orig_q = FakeSD.query_devices
+
+    def query_devices(cls, *a, **kw):
+        lst = [dict(d, default_samplerate=48000, hostapi=0) for d in devs]
+        if not a and not kw:
+            return lst
+        return lst[a[0]] if a and isinstance(a[0], int) and a[0] < len(lst) else orig_q.__func__(cls, *a, **kw)
+    FakeSD.query_devices = classmethod(query_devices)
+    FakeSD._terminate = staticmethod(lambda: calls.append('term'))
+    FakeSD._initialize = staticmethod(lambda: calls.append('init'))
+    try:
+        core.__dict__.pop('_dev_names', None)
+        ins, outs = core.devices()
+        assert [l for _, l in outs] == ['1: Speakers [Fake API]']
+        core.s.update(in_dev='0: Mic [Fake API]', out_dev='1: Speakers [Fake API]',
+                      sel_ring_dev='1: Speakers [Fake API]')
+        # headphones plugged in: PortAudio numbers the devices anew
+        devs.insert(0, dict(name='External Headphones', max_input_channels=0, max_output_channels=2))
+        assert core.rescan_devices() is None and calls == ['term', 'init']
+        ins, outs = core.devices()
+        assert '0: External Headphones [Fake API]' in [l for _, l in outs], outs
+        assert core.s['in_dev'] == '1: Mic [Fake API]' and core.s['out_dev'] == '2: Speakers [Fake API]'
+        assert core._idx(core.s['sel_ring_dev']) == 2
+        # an old label with the stale number still finds its device by name
+        assert core._idx('1: Speakers [Fake API]') == 2 and core._idx('7: Gone [Fake API]') == 7
+        core.tx_busy = True
+        assert core.rescan_devices()                       # not while transmitting
+        core.tx_busy = False
+    finally:
+        FakeSD.query_devices = orig_q
+        del FakeSD._terminate, FakeSD._initialize
+        core.__dict__.pop('_dev_names', None)
+        core.s.update(in_dev='', out_dev='', sel_ring_dev='')
+        core.save()
+    print('OK  device rescan: PortAudio restarted, new devices listed, saved choices renumbered by name')
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         test_scan_timing()
@@ -838,4 +881,5 @@ if __name__ == '__main__':
         test_beacon_scan_poll(tmp)
         test_tx_output(tmp)
         test_voice_ptt(tmp)
+        test_device_rescan(tmp)
     print('ALL OK')

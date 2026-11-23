@@ -875,4 +875,10 @@ EN = {
         'HFPager reception',
     'Язык':
         'Language',
+    'Идёт передача — обновите список после неё.':
+        'Transmitting — refresh the list after it.',
+    'Список звуковых устройств обновлён: входов %d, выходов %d':
+        'Sound device list refreshed: %d inputs, %d outputs',
+    'Звуковые устройства':
+        'Sound devices',
 }
